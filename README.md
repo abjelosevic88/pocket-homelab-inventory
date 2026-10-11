@@ -21,6 +21,8 @@ Most inventory apps die because entering things is a chore. This one is built ar
 - **Tap − when you use one, + when you buy more.** Every item has a plus/minus right on the list. Set an *alert below* level and the item appears on the **shopping list** by itself, grouped by place, with a *Bought* button that puts it back.
 - **Know whose it is.** Several people sign in to the same inventory. An item can belong to one person, a few, or the whole household. Filter by *Mine*, by a name, or by *Household*. Every quantity change records who did it.
 
+On the go, **[Pocket Homelab](https://pockethomelab.com/)** is its companion app for iPhone, iPad, Mac and Android: the items with their − and +, the quick add and the shopping list in your pocket. See [Companion app](#companion-app-pocket-homelab).
+
 <p align="center"><img src="docs/screenshots/items.png" width="900" alt="Items page: stat tiles, search and filters, quick add, one row per item with plus/minus"></p>
 
 <table>
@@ -128,6 +130,28 @@ curl -H "Authorization: Bearer pi_…" https://inventory.example.com/api/v1/dash
 ```
 
 Everything else is in [docs/api.md](docs/api.md), including a Homepage `customapi` widget.
+
+## Companion app: Pocket Homelab
+
+[Pocket Homelab](https://pockethomelab.com/) is a native app for iPhone, iPad, Mac and Android that talks to self-hosted services, and Pocket Inventory is one of them. It connects with an API token and gives you:
+
+| Area | What you get |
+|---|---|
+| **Items** | The figures (items, low, expiring, worth), the one-line quick add (name, how many, where), the items by scope (all, low, expiring, mine, archived) with a place filter, a sort and search, and **− and +** on every row. An **Inventory** tab, and a Home card with what is low and expiring. |
+| **An item** | Photo, quantity with − and + and *Set quantity* with a note, the alert level and what it means right now, the details, the history, and edit, archive, delete. The full form makes and edits items, with *New…* for a place or category on the spot. |
+| **Shopping list** | Everything at or below its alert level by place, with *Bought*; the expiring items; *Copy as text*. |
+| **Places & categories** | Add, rename, reorder and delete; the activity feed of every + and −. |
+| **Mac** | A workspace with a sortable table, − and + in the quantity column, and the selected item at the right. The quick action *Add to inventory* on every platform. |
+
+<p align="center"><img src="docs/screenshots/app/inventory.png" width="280" alt="Pocket Homelab on iPhone: the Inventory screen with the figures, the quick add and the items with − and +"> <img src="docs/screenshots/app/inventory-item.png" width="280" alt="An item's page: quantity with − and +, the details and the history"> <img src="docs/screenshots/app/inventory-shopping.png" width="280" alt="The shopping list by place with Bought buttons"></p>
+
+Setup:
+
+1. In Pocket Inventory, create a token under **Settings → API tokens** (it starts with `pi_` and is shown once).
+2. In Pocket Homelab, open **Settings → Services → Pocket Inventory** and enter the base URL (e.g. `https://inventory.example.com`) and the token, then **Test connection**.
+3. Turn on the **Inventory** tab in **Settings → Tabs**.
+
+The token is kept in the device's secure store (the Keychain on Apple devices). Details: [pockethomelab.com/docs/services/inventory](https://pockethomelab.com/docs/services/inventory).
 
 ## Backups
 
