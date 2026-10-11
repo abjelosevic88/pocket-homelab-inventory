@@ -6,6 +6,8 @@ import type { Dashboard, Item, Movement } from '../lib/types'
 import { ago, daysUntil, money, qty, splitTags, todayISO } from '../lib/format'
 import { Confirm, Empty, Field, Loading, Modal, PageHeader, useAsync, useDebounce, useToast } from '../components/ui'
 import { Avatars, PeoplePicker } from '../components/people'
+import { Select } from '../components/Select'
+import type { Category, Location } from '../lib/types'
 
 export default function Items() {
   const { settings, users, locations, categories, user, reloadMeta } = useApp()
@@ -80,6 +82,10 @@ export default function Items() {
 
   const currency = settings?.currency || 'EUR'
   const d = dash.data
+  const placeOpts = [{ value: '', label: 'All places' }, ...locations.map(l => ({ value: String(l.id), label: l.name, hint: `${l.item_count}` })), { value: 'none', label: 'No place' }]
+  const catOpts = [{ value: '', label: 'All categories' }, ...categories.map(c => ({ value: String(c.id), label: c.name, hint: `${c.item_count}` })), { value: 'none', label: 'Uncategorised' }]
+  const createPlace = async (name: string) => { const l = await api.post<Location>(`${V1}/locations`, { name }); await reloadMeta(); return String(l.id) }
+  const createCategory = async (name: string) => { const c = await api.post<Category>(`${V1}/categories`, { name }); await reloadMeta(); return String(c.id) }
   const activeFilters = Boolean(q || location || category || person || tag || view)
 
   return (
@@ -99,24 +105,9 @@ export default function Items() {
 
       <div className="toolbar">
         <label className="search"><span className="ico">⌕</span><input value={q} onChange={e => set('q', e.target.value)} placeholder="Search name, brand, serial, barcode, tag, place…" /></label>
-        <select value={location} onChange={e => set('location', e.target.value)} aria-label="Place">
-          <option value="">All places</option>
-          {locations.map(l => <option key={l.id} value={l.id}>{l.name} ({l.item_count})</option>)}
-          <option value="none">No place</option>
-        </select>
-        <select value={category} onChange={e => set('category', e.target.value)} aria-label="Category">
-          <option value="">All categories</option>
-          {categories.map(c => <option key={c.id} value={c.id}>{c.name} ({c.item_count})</option>)}
-          <option value="none">Uncategorised</option>
-        </select>
-        <select value={sort} onChange={e => set('sort', e.target.value)} aria-label="Sort">
-          <option value="name">Name</option>
-          <option value="updated">Recently changed</option>
-          <option value="created">Newest</option>
-          <option value="quantity">Lowest quantity</option>
-          <option value="location">By place</option>
-          <option value="expiry">Expiry</option>
-        </select>
+        <Select value={location} onChange={v => set('location', v)} options={placeOpts} ariaLabel="Place" placeholder="All places" />
+        <Select value={category} onChange={v => set('category', v)} options={catOpts} ariaLabel="Category" placeholder="All categories" />
+        <Select value={sort} onChange={v => set('sort', v)} ariaLabel="Sort" options={[{ value: 'name', label: 'Sort: name' }, { value: 'updated', label: 'Sort: recently changed' }, { value: 'created', label: 'Sort: newest' }, { value: 'quantity', label: 'Sort: lowest quantity' }, { value: 'location', label: 'Sort: by place' }, { value: 'expiry', label: 'Sort: expiry' }]} />
         {activeFilters && <button className="btn ghost sm" onClick={() => setParams(new URLSearchParams(), { replace: true })}>Clear</button>}
       </div>
 
@@ -139,8 +130,8 @@ export default function Items() {
           <div className="card-body quick-add">
             <input ref={quickRef} className="wide" value={quick.name} onChange={e => setQuick({ ...quick, name: e.target.value })} placeholder="Quick add: what did you get?" maxLength={120} />
             <input type="number" inputMode="decimal" step="any" min={0} value={quick.quantity} onChange={e => setQuick({ ...quick, quantity: e.target.value })} aria-label="Quantity" />
-            <select value={quick.location_id} onChange={e => setQuick({ ...quick, location_id: e.target.value })} aria-label="Place"><option value="">{location && location !== 'none' ? locations.find(l => String(l.id) === location)?.name : 'Place…'}</option>{locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
-            <select value={quick.category_id} onChange={e => setQuick({ ...quick, category_id: e.target.value })} aria-label="Category"><option value="">{category && category !== 'none' ? categories.find(c => String(c.id) === category)?.name : 'Category…'}</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+            <Select value={quick.location_id} onChange={v => setQuick({ ...quick, location_id: v })} ariaLabel="Place" placeholder={location && location !== 'none' ? (locations.find(l => String(l.id) === location)?.name || 'Place…') : 'Place…'} options={locations.map(l => ({ value: String(l.id), label: l.name }))} onCreate={createPlace} createLabel="New place" clearLabel="No place" />
+            <Select value={quick.category_id} onChange={v => setQuick({ ...quick, category_id: v })} ariaLabel="Category" placeholder={category && category !== 'none' ? (categories.find(c => String(c.id) === category)?.name || 'Category…') : 'Category…'} options={categories.map(c => ({ value: String(c.id), label: c.name }))} onCreate={createCategory} createLabel="New category" clearLabel="No category" />
             <button className="btn primary" disabled={!quick.name.trim()}>Add</button>
           </div>
         </form>
@@ -197,7 +188,7 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
   const isNew = !item.id
   const [f, setF] = useState({
     name: item.name || '', notes: item.notes || '', quantity: item.quantity ?? 1, unit: item.unit ?? (settings?.default_unit || ''), min_quantity: item.min_quantity ?? 0,
-    location_id: item.location_id ? String(item.location_id) : '', category_id: item.category_id ? String(item.category_id) : '', new_location: '', new_category: '',
+    location_id: item.location_id ? String(item.location_id) : '', category_id: item.category_id ? String(item.category_id) : '',
     tags: item.tags || '', brand: item.brand || '', model: item.model || '', serial: item.serial || '', barcode: item.barcode || '', price: item.price ?? 0,
     purchase_date: item.purchase_date || '', expiry_date: item.expiry_date || '', url: item.url || '', user_ids: item.user_ids || [] as number[], note: '',
   })
@@ -216,8 +207,7 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
       const body: Record<string, unknown> = {
         name: f.name, notes: f.notes, quantity: Number(f.quantity) || 0, unit: f.unit, min_quantity: Number(f.min_quantity) || 0, tags: f.tags, brand: f.brand, model: f.model,
         serial: f.serial, barcode: f.barcode, price: Number(f.price) || 0, purchase_date: f.purchase_date, expiry_date: f.expiry_date, url: f.url, user_ids: f.user_ids, note: f.note,
-        location_id: f.location_id === 'new' ? null : f.location_id ? Number(f.location_id) : null, category_id: f.category_id === 'new' ? null : f.category_id ? Number(f.category_id) : null,
-        location: f.location_id === 'new' ? f.new_location : '', category: f.category_id === 'new' ? f.new_category : '',
+        location_id: f.location_id ? Number(f.location_id) : null, category_id: f.category_id ? Number(f.category_id) : null,
       }
       if (item.id) await api.put(`${V1}/items/${item.id}`, body); else await api.post(`${V1}/items`, body)
       toast(item.id ? 'Saved' : `Added ${f.name}`)
@@ -251,21 +241,11 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
           <Field label="Alert below" help="0 = no low-stock alert"><input type="number" inputMode="decimal" step="any" min={0} value={f.min_quantity} onChange={e => setF({ ...f, min_quantity: Number(e.target.value) })} /></Field>
         </div>
         <div className="two-col tight">
-          <Field label="Place">
-            <select value={f.location_id} onChange={e => setF({ ...f, location_id: e.target.value })}>
-              <option value="">— none —</option>
-              {locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-              <option value="new">+ New place…</option>
-            </select>
-            {f.location_id === 'new' && <input className="mt" style={{ marginTop: 6 }} value={f.new_location} onChange={e => setF({ ...f, new_location: e.target.value })} placeholder="Name of the new place" autoFocus required />}
+          <Field label="Place" help="Type a new name to create a place on the spot.">
+            <Select value={f.location_id} onChange={v => setF({ ...f, location_id: v })} placeholder="— none —" options={locations.map(l => ({ value: String(l.id), label: l.name }))} onCreate={async name => { const l = await api.post<Location>(`${V1}/locations`, { name }); await reloadMeta(); return String(l.id) }} createLabel="New place" clearLabel="No place" />
           </Field>
           <Field label="Category">
-            <select value={f.category_id} onChange={e => setF({ ...f, category_id: e.target.value })}>
-              <option value="">— none —</option>
-              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              <option value="new">+ New category…</option>
-            </select>
-            {f.category_id === 'new' && <input style={{ marginTop: 6 }} value={f.new_category} onChange={e => setF({ ...f, new_category: e.target.value })} placeholder="Name of the new category" autoFocus required />}
+            <Select value={f.category_id} onChange={v => setF({ ...f, category_id: v })} placeholder="— none —" options={categories.map(c => ({ value: String(c.id), label: c.name }))} onCreate={async name => { const c = await api.post<Category>(`${V1}/categories`, { name }); await reloadMeta(); return String(c.id) }} createLabel="New category" clearLabel="No category" />
           </Field>
         </div>
         {users.length > 1 && <Field label="Whose is it?" help="Pick one or more people; leave on “Everyone” for shared household things."><PeoplePicker users={users} value={f.user_ids} onChange={ids => setF({ ...f, user_ids: ids })} /></Field>}
