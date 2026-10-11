@@ -21,6 +21,29 @@ Most inventory apps die because entering things is a chore. This one is built ar
 - **Tap − when you use one, + when you buy more.** Every item has a plus/minus right on the list. Set an *alert below* level and the item appears on the **shopping list** by itself, grouped by place, with a *Bought* button that puts it back.
 - **Know whose it is.** Several people sign in to the same inventory. An item can belong to one person, a few, or the whole household. Filter by *Mine*, by a name, or by *Household*. Every quantity change records who did it.
 
+<p align="center"><img src="docs/screenshots/items.png" width="900" alt="Items page: stat tiles, search and filters, quick add, one row per item with plus/minus"></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/shopping.png" alt="Shopping list grouped by place with Bought buttons"></td>
+    <td width="50%"><img src="docs/screenshots/item.png" alt="Item editor with place, category, people chips and details"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Shopping list fills itself from alert levels; expiring items below.</sub></td>
+    <td align="center"><sub>The item form: who it belongs to, and the details folded away.</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/picker.png" width="640" alt="Searchable place picker"><br>
+  <sub>Every picker is searchable; type a new name to create a place or category on the spot.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/items-mobile.png" width="260" alt="Items page on a phone, dark mode"><br>
+  <sub>Installable PWA with a bottom tab bar and dark mode.</sub>
+</p>
+
 ## Features
 
 | Area | What you get |

@@ -288,3 +288,15 @@ details.more > summary::before { content: "▸ "; } details.more[open] > summary
 /* buttons do not inherit colour — the stat tiles went black in dark mode */
 .stat { font: inherit; color: inherit; text-align: center; }
 @media (max-width: 900px) { .toolbar .sel { min-width: 0; flex: 1 1 45%; } }
+/* phones: stat tiles in one compact row, quick-add as name / place+category / qty+add */
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .stat { padding: 8px 2px; border-radius: 8px; }
+  .stat .n { font-size: 18px; }
+  .stat .l { font-size: 10px; line-height: 1.2; }
+  .quick-add { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .quick-add .wide { grid-column: 1 / -1; order: 0; }
+  .quick-add .sel { order: 1; }
+  .quick-add input[type="number"] { order: 3; }
+  .quick-add .btn { order: 4; }
+}
