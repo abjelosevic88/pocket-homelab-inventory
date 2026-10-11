@@ -1,0 +1,310 @@
+// Package server wires the HTTP API, auth and the embedded SPA.
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/abjelosevic88/pocket-homelab-inventory/internal/config"
+	"github.com/abjelosevic88/pocket-homelab-inventory/internal/store"
+)
+
+// Version is injected at build time.
+var Version = "dev"
+
+// Server holds dependencies.
+type Server struct {
+	cfg      *config.Config
+	store    *store.Store
+	log      *slog.Logger
+	webFS    fs.FS
+	started  time.Time
+	requests atomic.Int64
+	errors   atomic.Int64
+}
+
+// New creates a server.
+func New(cfg *config.Config, st *store.Store, log *slog.Logger, webFS fs.FS) *Server {
+	return &Server{cfg: cfg, store: st, log: log, webFS: webFS, started: time.Now()}
+}
+
+// Bootstrap seeds the first admin (if configured), default places and demo data.
+func (s *Server) Bootstrap(ctx context.Context) error {
+	if err := os.MkdirAll(s.cfg.PhotoDir, 0o755); err != nil {
+		return fmt.Errorf("create photo dir: %w", err)
+	}
+	n, err := s.store.CountUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if n == 0 && s.cfg.AuthMode == "local" && s.cfg.AdminEmail != "" && s.cfg.AdminPassword != "" {
+		if len(s.cfg.AdminPassword) < 8 {
+			return errors.New("ADMIN_PASSWORD must be at least 8 characters")
+		}
+		h, _ := bcrypt.GenerateFromPassword([]byte(s.cfg.AdminPassword), bcrypt.DefaultCost)
+		u := &store.User{Email: s.cfg.AdminEmail, Name: s.cfg.AdminName, PasswordHash: string(h), Role: "admin"}
+		if err := s.store.CreateUser(ctx, u); err != nil {
+			return err
+		}
+		st, _ := s.store.GetSettings(ctx)
+		st.SetupComplete = true
+		if err := s.store.SaveSettings(ctx, st); err != nil {
+			return err
+		}
+		s.log.Info("admin user created from environment", "email", u.Email)
+	}
+	st, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !st.DefaultsSeeded {
+		for _, name := range []string{"Tools", "Electronics", "Household", "Food & drink", "Medicine", "Documents", "Clothing", "Outdoor"} {
+			_ = s.store.CreateCategory(ctx, &store.Category{Name: name})
+		}
+		st.DefaultsSeeded = true
+		if err := s.store.SaveSettings(ctx, st); err != nil {
+			return err
+		}
+	}
+	if s.cfg.DemoData {
+		if err := s.seedDemo(ctx); err != nil {
+			return err
+		}
+	}
+	_ = s.store.PurgeSessions(ctx)
+	return nil
+}
+
+// Router builds the chi router.
+func (s *Server) Router() http.Handler {
+	r := chi.NewRouter()
+	if s.cfg.TrustProxy {
+		r.Use(middleware.RealIP)
+	}
+	r.Use(middleware.RequestID)
+	r.Use(s.logging)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Compress(5))
+	r.Use(middleware.Timeout(60 * time.Second))
+
+	r.Get("/healthz", s.handleHealth)
+	r.Get("/readyz", s.handleReady)
+	r.Get("/api/health", s.handleHealth)
+	if s.cfg.MetricsEnabled {
+		r.Get("/metrics", s.handleMetrics)
+	}
+
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/auth/login", s.handleLogin)
+		r.Post("/auth/setup", s.handleSetup)
+		r.Get("/auth/status", s.handleAuthStatus)
+
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Post("/auth/logout", s.handleLogout)
+			r.Get("/auth/me", s.handleMe)
+			r.Put("/auth/me", s.handleUpdateMe)
+
+			r.Get("/dashboard", s.handleDashboard)
+			r.Get("/activity", s.handleActivity)
+			r.Get("/shopping", s.handleShopping)
+			r.Get("/lookup", s.handleLookup)
+
+			r.Get("/items", s.handleListItems)
+			r.Post("/items", s.handleCreateItem)
+			r.Get("/items/{id}", s.handleGetItem)
+			r.Put("/items/{id}", s.handleUpdateItem)
+			r.Delete("/items/{id}", s.handleDeleteItem)
+			r.Post("/items/{id}/adjust", s.handleAdjustItem)
+			r.Post("/items/{id}/archive", s.handleArchiveItem)
+			r.Post("/items/{id}/unarchive", s.handleUnarchiveItem)
+			r.Get("/items/{id}/movements", s.handleItemMovements)
+			r.Get("/items/{id}/photo", s.handleGetPhoto)
+			r.Post("/items/{id}/photo", s.handleUploadPhoto)
+			r.Delete("/items/{id}/photo", s.handleDeletePhoto)
+
+			r.Get("/locations", s.handleListLocations)
+			r.Post("/locations", s.handleCreateLocation)
+			r.Put("/locations/reorder", s.handleReorderLocations)
+			r.Put("/locations/{id}", s.handleUpdateLocation)
+			r.Delete("/locations/{id}", s.handleDeleteLocation)
+
+			r.Get("/categories", s.handleListCategories)
+			r.Post("/categories", s.handleCreateCategory)
+			r.Put("/categories/reorder", s.handleReorderCategories)
+			r.Put("/categories/{id}", s.handleUpdateCategory)
+			r.Delete("/categories/{id}", s.handleDeleteCategory)
+
+			r.Get("/tags", s.handleListTags)
+
+			r.Get("/users", s.handleListUsers)
+			r.Post("/users", s.handleCreateUser)
+			r.Put("/users/{id}", s.handleUpdateUser)
+			r.Delete("/users/{id}", s.handleDeleteUser)
+
+			r.Get("/settings", s.handleGetSettings)
+			r.Put("/settings", s.handlePutSettings)
+			r.Get("/settings/system", s.handleSystemInfo)
+
+			r.Get("/tokens", s.handleListTokens)
+			r.Post("/tokens", s.handleCreateToken)
+			r.Delete("/tokens/{id}", s.handleDeleteToken)
+
+			r.Get("/backup", s.handleBackup)
+			r.Get("/export.json", s.handleExportJSON)
+			r.Get("/export.csv", s.handleExportCSV)
+			r.Post("/import", s.handleImportJSON)
+			r.Post("/import.csv", s.handleImportCSV)
+		})
+	})
+
+	r.NotFound(s.handleSPA)
+	return r
+}
+
+// ---------- helpers ----------
+
+func (s *Server) logging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+		s.requests.Add(1)
+		if ww.Status() >= 500 {
+			s.errors.Add(1)
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			return
+		}
+		s.log.Debug("http", "method", r.Method, "path", r.URL.Path, "status", ww.Status(), "dur", time.Since(start).String(), "ip", r.RemoteAddr)
+	})
+}
+
+type apiError struct {
+	Error string `json:"error"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, apiError{Error: msg})
+}
+
+func (s *Server) fail(w http.ResponseWriter, err error, context string) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	case errors.Is(err, store.ErrConflict):
+		writeErr(w, http.StatusConflict, "a record with that name already exists")
+		return
+	}
+	s.log.Error(context, "err", err)
+	writeErr(w, http.StatusInternalServerError, context+": "+err.Error())
+}
+
+func decode(r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 8<<20))
+	return dec.Decode(v)
+}
+
+func idParam(r *http.Request, name string) int64 {
+	n, _ := strconv.ParseInt(chi.URLParam(r, name), 10, 64)
+	return n
+}
+
+func queryInt(r *http.Request, name string) int64 {
+	n, _ := strconv.ParseInt(r.URL.Query().Get(name), 10, 64)
+	return n
+}
+
+func queryBool(r *http.Request, name string) bool {
+	v := strings.ToLower(r.URL.Query().Get(name))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+func validDate(s string) bool {
+	_, err := store.ParseDate(s)
+	return err == nil
+}
+
+// ---------- health / metrics ----------
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": Version, "uptime": time.Since(s.started).Round(time.Second).String()})
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DB.PingContext(r.Context()); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	counts := s.store.Counts(ctx)
+	st, _ := s.store.GetSettings(ctx)
+	d, _ := s.store.DashboardStats(ctx, st.Currency, st.ExpiryWarnDays)
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	fmt.Fprintf(w, "# HELP pocket_inventory_info Build info.\n# TYPE pocket_inventory_info gauge\npocket_inventory_info{version=%q} 1\n", Version)
+	fmt.Fprintf(w, "# HELP pocket_inventory_uptime_seconds Process uptime.\n# TYPE pocket_inventory_uptime_seconds gauge\npocket_inventory_uptime_seconds %d\n", int(time.Since(s.started).Seconds()))
+	fmt.Fprintf(w, "# HELP pocket_inventory_http_requests_total HTTP requests served.\n# TYPE pocket_inventory_http_requests_total counter\npocket_inventory_http_requests_total %d\n", s.requests.Load())
+	fmt.Fprintf(w, "# HELP pocket_inventory_http_errors_total HTTP 5xx responses.\n# TYPE pocket_inventory_http_errors_total counter\npocket_inventory_http_errors_total %d\n", s.errors.Load())
+	for k, v := range counts {
+		fmt.Fprintf(w, "# TYPE pocket_inventory_rows{table=%q} gauge\npocket_inventory_rows{table=%q} %d\n", k, k, v)
+	}
+	if d != nil {
+		fmt.Fprintf(w, "# HELP pocket_inventory_items Active items.\n# TYPE pocket_inventory_items gauge\npocket_inventory_items %d\n", d.Items)
+		fmt.Fprintf(w, "# HELP pocket_inventory_low_stock Items at or below their minimum.\n# TYPE pocket_inventory_low_stock gauge\npocket_inventory_low_stock %d\n", d.LowStock)
+		fmt.Fprintf(w, "# HELP pocket_inventory_expiring Items expiring within the warning window.\n# TYPE pocket_inventory_expiring gauge\npocket_inventory_expiring %d\n", d.Expiring)
+		fmt.Fprintf(w, "# HELP pocket_inventory_total_value Sum of quantity × price.\n# TYPE pocket_inventory_total_value gauge\npocket_inventory_total_value %.2f\n", d.TotalValue)
+	}
+}
+
+// ---------- static / SPA ----------
+
+func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	if s.webFS == nil {
+		http.Error(w, "web UI not built (run `make web`)", http.StatusNotFound)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" {
+		path = "index.html"
+	}
+	if f, err := s.webFS.Open(path); err == nil {
+		f.Close()
+		if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		http.FileServerFS(s.webFS).ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	r.URL.Path = "/"
+	http.FileServerFS(s.webFS).ServeHTTP(w, r)
+}

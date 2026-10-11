@@ -1,0 +1,21 @@
+[Unit]
+Description=Pocket Inventory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pocket-inventory
+Group=pocket-inventory
+WorkingDirectory=/var/lib/pocket-inventory
+Environment=DATA_DIR=/var/lib/pocket-inventory PORT=8080 TZ=Europe/Berlin BASE_URL=https://inventory.example.com
+ExecStart=/usr/local/bin/pocket-inventory
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pocket-inventory
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

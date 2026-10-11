@@ -1,0 +1,465 @@
+package server
+
+import (
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/abjelosevic88/pocket-homelab-inventory/internal/store"
+)
+
+func filterFrom(r *http.Request) store.ItemFilter {
+	q := r.URL.Query()
+	f := store.ItemFilter{
+		Query:    q.Get("q"),
+		Tag:      q.Get("tag"),
+		Barcode:  q.Get("barcode"),
+		LowOnly:  queryBool(r, "low"),
+		Archived: queryBool(r, "archived"),
+		Sort:     q.Get("sort"),
+		Limit:    int(queryInt(r, "limit")),
+		Expiring: int(queryInt(r, "expiring")),
+	}
+	switch q.Get("location") {
+	case "", "any":
+	case "none":
+		f.LocationID = -1
+	default:
+		f.LocationID = queryInt(r, "location")
+	}
+	switch q.Get("category") {
+	case "", "any":
+	case "none":
+		f.CategoryID = -1
+	default:
+		f.CategoryID = queryInt(r, "category")
+	}
+	switch q.Get("user") {
+	case "", "any":
+	case "none", "household":
+		f.UserID = -1
+	case "me":
+		f.UserID = actorID(r.Context())
+	default:
+		f.UserID = queryInt(r, "user")
+	}
+	return f
+}
+
+func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListItems(r.Context(), filterFrom(r))
+	if err != nil {
+		s.fail(w, err, "list items")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// handleLookup finds an item by barcode (for scanner / Shortcuts flows).
+func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.URL.Query().Get("barcode"))
+	if code == "" {
+		writeErr(w, http.StatusBadRequest, "barcode is required")
+		return
+	}
+	items, err := s.store.ListItems(r.Context(), store.ItemFilter{Barcode: code, Archived: true, Limit: 1})
+	if err != nil {
+		s.fail(w, err, "lookup")
+		return
+	}
+	if len(items) == 0 {
+		writeErr(w, http.StatusNotFound, "no item with that barcode")
+		return
+	}
+	writeJSON(w, http.StatusOK, items[0])
+}
+
+func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
+	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	if err != nil {
+		s.fail(w, err, "get item")
+		return
+	}
+	moves, _ := s.store.ListMovements(r.Context(), it.ID, 30)
+	writeJSON(w, http.StatusOK, map[string]any{"item": it, "movements": moves})
+}
+
+type itemInput struct {
+	Name         string   `json:"name"`
+	Notes        string   `json:"notes"`
+	CategoryID   *int64   `json:"category_id"`
+	LocationID   *int64   `json:"location_id"`
+	Location     string   `json:"location"` // name — created when it does not exist
+	Category     string   `json:"category"` // name — created when it does not exist
+	Quantity     *float64 `json:"quantity"`
+	Unit         string   `json:"unit"`
+	MinQuantity  *float64 `json:"min_quantity"`
+	Barcode      string   `json:"barcode"`
+	Brand        string   `json:"brand"`
+	Model        string   `json:"model"`
+	Serial       string   `json:"serial"`
+	PurchaseDate string   `json:"purchase_date"`
+	Price        *float64 `json:"price"`
+	ExpiryDate   string   `json:"expiry_date"`
+	Tags         string   `json:"tags"`
+	URL          string   `json:"url"`
+	UserIDs      *[]int64 `json:"user_ids"`
+	Note         string   `json:"note"` // movement note when the quantity changes
+}
+
+func (in itemInput) validate() string {
+	if strings.TrimSpace(in.Name) == "" {
+		return "name is required"
+	}
+	if in.Quantity != nil && *in.Quantity < 0 {
+		return "quantity cannot be negative"
+	}
+	if in.MinQuantity != nil && *in.MinQuantity < 0 {
+		return "min_quantity cannot be negative"
+	}
+	if in.Price != nil && *in.Price < 0 {
+		return "price cannot be negative"
+	}
+	if in.PurchaseDate != "" && !validDate(in.PurchaseDate) {
+		return "purchase_date must be YYYY-MM-DD"
+	}
+	if in.ExpiryDate != "" && !validDate(in.ExpiryDate) {
+		return "expiry_date must be YYYY-MM-DD"
+	}
+	return ""
+}
+
+// apply copies the input onto an item, resolving location/category names.
+func (s *Server) apply(r *http.Request, it *store.Item, in itemInput) error {
+	ctx := r.Context()
+	it.Name = strings.TrimSpace(in.Name)
+	it.Notes = strings.TrimSpace(in.Notes)
+	it.Unit = strings.TrimSpace(in.Unit)
+	it.Barcode = strings.TrimSpace(in.Barcode)
+	it.Brand = strings.TrimSpace(in.Brand)
+	it.Model = strings.TrimSpace(in.Model)
+	it.Serial = strings.TrimSpace(in.Serial)
+	it.PurchaseDate = in.PurchaseDate
+	it.ExpiryDate = in.ExpiryDate
+	it.Tags = in.Tags
+	it.URL = strings.TrimSpace(in.URL)
+	if in.Quantity != nil {
+		it.Quantity = *in.Quantity
+	}
+	if in.MinQuantity != nil {
+		it.MinQuantity = *in.MinQuantity
+	}
+	if in.Price != nil {
+		it.Price = *in.Price
+	}
+	if in.UserIDs != nil {
+		it.UserIDs = *in.UserIDs
+	}
+	it.LocationID = in.LocationID
+	if in.LocationID != nil && *in.LocationID <= 0 {
+		it.LocationID = nil
+	}
+	if name := strings.TrimSpace(in.Location); name != "" && it.LocationID == nil {
+		l, err := s.store.FindLocationByName(ctx, name)
+		if err != nil {
+			l = &store.Location{Name: name}
+			if err := s.store.CreateLocation(ctx, l); err != nil {
+				return err
+			}
+		}
+		it.LocationID = &l.ID
+	}
+	it.CategoryID = in.CategoryID
+	if in.CategoryID != nil && *in.CategoryID <= 0 {
+		it.CategoryID = nil
+	}
+	if name := strings.TrimSpace(in.Category); name != "" && it.CategoryID == nil {
+		c, err := s.store.FindCategoryByName(ctx, name)
+		if err != nil {
+			c = &store.Category{Name: name}
+			if err := s.store.CreateCategory(ctx, c); err != nil {
+				return err
+			}
+		}
+		it.CategoryID = &c.ID
+	}
+	return nil
+}
+
+func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
+	var in itemInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if msg := in.validate(); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	st, _ := s.store.GetSettings(r.Context())
+	it := &store.Item{Quantity: 1, Unit: st.DefaultUnit}
+	if err := s.apply(r, it, in); err != nil {
+		s.fail(w, err, "resolve places")
+		return
+	}
+	if err := s.store.CreateItem(r.Context(), it, actorID(r.Context())); err != nil {
+		s.fail(w, err, "create item")
+		return
+	}
+	writeJSON(w, http.StatusCreated, it)
+}
+
+func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	if err != nil {
+		s.fail(w, err, "get item")
+		return
+	}
+	var in itemInput
+	if err := decode(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if msg := in.validate(); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	if err := s.apply(r, it, in); err != nil {
+		s.fail(w, err, "resolve places")
+		return
+	}
+	if err := s.store.UpdateItem(r.Context(), it, strings.TrimSpace(in.Note), actorID(r.Context())); err != nil {
+		s.fail(w, err, "update item")
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
+	id := idParam(r, "id")
+	it, err := s.store.GetItem(r.Context(), id)
+	if err != nil {
+		s.fail(w, err, "get item")
+		return
+	}
+	if err := s.store.DeleteItem(r.Context(), id); err != nil {
+		s.fail(w, err, "delete item")
+		return
+	}
+	if it.Photo != "" {
+		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, it.Photo))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAdjustItem changes the quantity: {"delta": -1} or {"quantity": 12}, with an optional "note".
+func (s *Server) handleAdjustItem(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Delta    *float64 `json:"delta"`
+		Quantity *float64 `json:"quantity"`
+		Note     string   `json:"note"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	var it *store.Item
+	var err error
+	actor := actorID(r.Context())
+	switch {
+	case in.Quantity != nil:
+		it, err = s.store.SetQuantity(r.Context(), idParam(r, "id"), *in.Quantity, strings.TrimSpace(in.Note), actor)
+	case in.Delta != nil:
+		it, err = s.store.AdjustQuantity(r.Context(), idParam(r, "id"), *in.Delta, strings.TrimSpace(in.Note), actor)
+	default:
+		writeErr(w, http.StatusBadRequest, "delta or quantity is required")
+		return
+	}
+	if err != nil {
+		s.fail(w, err, "adjust quantity")
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *Server) handleArchiveItem(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.SetArchived(r.Context(), idParam(r, "id"), true); err != nil {
+		s.fail(w, err, "archive item")
+		return
+	}
+	it, _ := s.store.GetItem(r.Context(), idParam(r, "id"))
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *Server) handleUnarchiveItem(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.SetArchived(r.Context(), idParam(r, "id"), false); err != nil {
+		s.fail(w, err, "unarchive item")
+		return
+	}
+	it, _ := s.store.GetItem(r.Context(), idParam(r, "id"))
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *Server) handleItemMovements(w http.ResponseWriter, r *http.Request) {
+	m, err := s.store.ListMovements(r.Context(), idParam(r, "id"), int(queryInt(r, "limit")))
+	if err != nil {
+		s.fail(w, err, "movements")
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	a, err := s.store.RecentActivity(r.Context(), int(queryInt(r, "limit")))
+	if err != nil {
+		s.fail(w, err, "activity")
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
+}
+
+// ---- photos ----
+
+var photoExt = map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif", "image/heic": ".heic"}
+
+func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
+	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	if err != nil {
+		s.fail(w, err, "get item")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxPhotoBytes)
+	if err := r.ParseMultipartForm(s.cfg.MaxPhotoBytes); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("photo too large or malformed upload (max %d MB)", s.cfg.MaxPhotoBytes>>20))
+		return
+	}
+	f, hdr, err := r.FormFile("photo")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "form field 'photo' is required")
+		return
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	ct := http.DetectContentType(head[:n])
+	if ct == "application/octet-stream" {
+		ct = hdr.Header.Get("Content-Type")
+	}
+	ct, _, _ = mime.ParseMediaType(ct)
+	ext, ok := photoExt[ct]
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unsupported image type "+ct)
+		return
+	}
+	name := fmt.Sprintf("%d-%s%s", it.ID, store.RandomToken(4), ext)
+	dst, err := os.Create(filepath.Join(s.cfg.PhotoDir, name))
+	if err != nil {
+		s.fail(w, err, "save photo")
+		return
+	}
+	if _, err := dst.Write(head[:n]); err == nil {
+		_, err = io.Copy(dst, f)
+	}
+	dst.Close()
+	if err != nil {
+		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, name))
+		s.fail(w, err, "save photo")
+		return
+	}
+	if it.Photo != "" {
+		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, it.Photo))
+	}
+	if err := s.store.SetPhoto(r.Context(), it.ID, name); err != nil {
+		s.fail(w, err, "save photo")
+		return
+	}
+	it, _ = s.store.GetItem(r.Context(), it.ID)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *Server) handleGetPhoto(w http.ResponseWriter, r *http.Request) {
+	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	if err != nil || it.Photo == "" {
+		writeErr(w, http.StatusNotFound, "no photo")
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	http.ServeFile(w, r, filepath.Join(s.cfg.PhotoDir, filepath.Base(it.Photo)))
+}
+
+func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
+	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	if err != nil {
+		s.fail(w, err, "get item")
+		return
+	}
+	if it.Photo != "" {
+		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, filepath.Base(it.Photo)))
+		_ = s.store.SetPhoto(r.Context(), it.ID, "")
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- dashboard / shopping ----
+
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	st, _ := s.store.GetSettings(r.Context())
+	d, err := s.store.DashboardStats(r.Context(), st.Currency, st.ExpiryWarnDays)
+	if err != nil {
+		s.fail(w, err, "dashboard")
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+// ShoppingGroup is the low-stock list for one location.
+type ShoppingGroup struct {
+	Location string       `json:"location"`
+	Items    []store.Item `json:"items"`
+}
+
+// handleShopping returns low-stock items grouped by location, plus items past
+// or near their expiry date.
+func (s *Server) handleShopping(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	st, _ := s.store.GetSettings(ctx)
+	low, err := s.store.ListItems(ctx, store.ItemFilter{LowOnly: true, Sort: "location"})
+	if err != nil {
+		s.fail(w, err, "shopping")
+		return
+	}
+	groups := map[string][]store.Item{}
+	for _, it := range low {
+		groups[it.LocationName] = append(groups[it.LocationName], it)
+	}
+	names := make([]string, 0, len(groups))
+	for k := range groups {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if names[i] == "" {
+			return false
+		}
+		if names[j] == "" {
+			return true
+		}
+		return strings.ToLower(names[i]) < strings.ToLower(names[j])
+	})
+	out := make([]ShoppingGroup, 0, len(names))
+	for _, n := range names {
+		out = append(out, ShoppingGroup{Location: n, Items: groups[n]})
+	}
+	expiring, _ := s.store.ListItems(ctx, store.ItemFilter{Expiring: st.ExpiryWarnDays, Sort: "expiry"})
+	if expiring == nil {
+		expiring = []store.Item{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "low_count": len(low), "expiring": expiring, "today": store.Today()})
+}
+
+func fmtQty(q float64) string { return strconv.FormatFloat(q, 'f', -1, 64) }
