@@ -7,7 +7,7 @@
   <b>One binary · one SQLite file · one volume.</b> No Postgres, no Redis, no five-level location trees.
 </p>
 <p align="center">
-  <a href="https://github.com/abjelosevic88/pocket-homelab-inventory/actions"><img src="https://img.shields.io/github/actions/workflow/status/abjelosevic88/pocket-homelab-inventory/ci.yml?branch=main&label=CI" alt="CI"></a>
+  <a href="https://github.com/abjelosevic88/pocket-homelab-inventory/actions"><img src="https://github.com/abjelosevic88/pocket-homelab-inventory/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/abjelosevic88/pocket-homelab-inventory/pkgs/container/pocket-homelab-inventory"><img src="https://img.shields.io/badge/ghcr.io-amd64%20%7C%20arm64%20%7C%20armv7-blue" alt="image"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
   <img src="https://img.shields.io/badge/image%20size-~15MB-lightgrey" alt="size">
