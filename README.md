@@ -141,9 +141,12 @@ Everything else is in [docs/api.md](docs/api.md), including a Homepage `customap
 | **An item** | Photo, quantity with − and + and *Set quantity* with a note, the alert level and what it means right now, the details, the history, and edit, archive, delete. The full form makes and edits items, with *New…* for a place or category on the spot. |
 | **Shopping list** | Everything at or below its alert level by place, with *Bought*; the expiring items; *Copy as text*. |
 | **Places & categories** | Add, rename, reorder and delete; the activity feed of every + and −. |
-| **Mac** | A workspace with a sortable table, − and + in the quantity column, and the selected item at the right. The quick action *Add to inventory* on every platform. |
+| **Mac** | A workspace with a sortable table, − and + in the quantity column, and the selected item at the right; the shopping list, places, activity and item pages laid out for the desktop. The quick action *Add to inventory* on every platform. |
+| **Settings** | The server's settings from the app: general, people, your profile, API tokens, backup and data. |
 
 <p align="center"><img src="docs/screenshots/app/inventory.png" width="280" alt="Pocket Homelab on iPhone: the Inventory screen with the figures, the quick add and the items with − and +"> <img src="docs/screenshots/app/inventory-item.png" width="280" alt="An item's page: quantity with − and +, the details and the history"> <img src="docs/screenshots/app/inventory-shopping.png" width="280" alt="The shopping list by place with Bought buttons"></p>
+
+<p align="center"><img src="docs/screenshots/app/inventory-mac.png" width="900" alt="Pocket Homelab on the Mac: the Inventory workspace with the quick add, the figures, the items as a table with − and + and the selected item at the right"></p>
 
 Setup:
 
