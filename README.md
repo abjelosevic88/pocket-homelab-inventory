@@ -179,7 +179,7 @@ Go 1.22+ and Node 20+. Stack: Go + chi + modernc SQLite (no CGO), React 19 + Vit
 
 ## Credits
 
-Sibling projects built the same way: [Pocket Habits](https://github.com/abjelosevic88/pocket-homelab-habit-tracker) and [Pocket Invoicing](https://github.com/abjelosevic88/pocket-homelab-invoicing).
+Sibling projects built the same way: [Pocket Habits](https://github.com/abjelosevic88/pocket-homelab-habit-tracker), [Pocket Invoicing](https://github.com/abjelosevic88/pocket-homelab-invoicing), [Pocket Bookshelf](https://github.com/abjelosevic88/pocket-homelab-bookshelf), [Pocket Split](https://github.com/abjelosevic88/pocket-homelab-cost-split) and [Pocket Subtitles](https://github.com/abjelosevic88/pocket-homelab-subtitles).
 
 ## License
 
