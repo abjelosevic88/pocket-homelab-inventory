@@ -7,35 +7,39 @@ import (
 	"github.com/abjelosevic88/pocket-homelab-inventory/internal/store"
 )
 
-// seedDemo fills an empty database with a believable household so screenshots
-// and first impressions work.
+// seedDemo fills the first account's empty inventory with a believable
+// household so screenshots and first impressions work. Without an account yet
+// it does nothing; newUser calls it again when the first account appears.
 func (s *Server) seedDemo(ctx context.Context) error {
-	if items, _ := s.store.ListItems(ctx, store.ItemFilter{Archived: true, Limit: 1}); len(items) > 0 {
+	users, _ := s.store.ListUsers(ctx)
+	if len(users) == 0 {
+		return nil
+	}
+	me := users[0].ID
+	if items, _ := s.store.ListItems(ctx, me, store.ItemFilter{Archived: true, Limit: 1}); len(items) > 0 {
 		return nil
 	}
 	locs := map[string]*store.Location{}
 	for _, n := range []string{"Garage", "Kitchen pantry", "Bathroom cabinet", "Office", "Hallway closet", "Attic"} {
 		l := &store.Location{Name: n}
-		if err := s.store.CreateLocation(ctx, l); err != nil {
-			return err
+		if err := s.store.CreateLocation(ctx, me, l); err != nil {
+			if l, err = s.store.FindLocationByName(ctx, me, n); err != nil {
+				return err
+			}
 		}
 		locs[n] = l
 	}
 	cats := map[string]*store.Category{}
-	all, _ := s.store.ListCategories(ctx)
+	all, _ := s.store.ListCategories(ctx, me)
 	for i := range all {
 		cats[all[i].Name] = &all[i]
 	}
-	users, _ := s.store.ListUsers(ctx)
-	var me, partner int64
-	if len(users) > 0 {
-		me = users[0].ID
-	}
+	var partner int64
 	if len(users) > 1 {
 		partner = users[1].ID
 	} else {
 		p := &store.User{Email: "sam@example.com", Name: "Sam", Role: "member"}
-		if err := s.store.CreateUser(ctx, p); err == nil {
+		if err := s.newUser(ctx, p); err == nil {
 			partner = p.ID
 		}
 	}

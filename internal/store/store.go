@@ -74,9 +74,23 @@ func (s *Store) migrate() error {
 		}
 	}
 	sort.Strings(names)
+	// Migrations run on one dedicated connection with foreign keys off, the way
+	// SQLite documents table rebuilds: dropping a rebuilt table must not fire
+	// ON DELETE actions on the rows that reference it. The result is checked
+	// with foreign_key_check before the migration commits.
+	ctx := context.Background()
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`) //nolint:errcheck
 	for _, name := range names {
 		var exists int
-		if err := s.DB.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE name = ?`, name).Scan(&exists); err != nil {
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(1) FROM schema_migrations WHERE name = ?`, name).Scan(&exists); err != nil {
 			return err
 		}
 		if exists > 0 {
@@ -86,11 +100,15 @@ func (s *Store) migrate() error {
 		if err != nil {
 			return err
 		}
-		tx, err := s.DB.Begin()
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration %s: %w", name, err)
+		}
+		if err := foreignKeyCheck(tx); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
@@ -106,6 +124,22 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+func foreignKeyCheck(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int
+		_ = rows.Scan(&table, &rowid, &parent, &fkid)
+		return fmt.Errorf("foreign key violation in %s (row %d → %s)", table, rowid.Int64, parent)
+	}
+	return rows.Err()
+}
+
 // Backup writes a consistent copy of the database to dst using VACUUM INTO.
 func (s *Store) Backup(ctx context.Context, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -116,7 +150,22 @@ func (s *Store) Backup(ctx context.Context, dst string) error {
 	return err
 }
 
-// Counts returns row counts per table for metrics / the About page.
+// AdoptOrphans gives rows without an owner (created before any account
+// existed, e.g. demo data or a pre-0002 database with no users) to uid.
+func (s *Store) AdoptOrphans(ctx context.Context, uid int64) error {
+	for _, t := range []string{"items", "locations", "categories"} {
+		if _, err := s.DB.ExecContext(ctx, `UPDATE `+t+` SET user_id = ? WHERE user_id IS NULL`, uid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ErrForbidden is returned when a person can see a record but may not do this
+// to it (deleting an item someone shared with them).
+var ErrForbidden = errors.New("forbidden")
+
+// Counts returns box-wide row counts per table for metrics / the admin About page.
 func (s *Store) Counts(ctx context.Context) map[string]int {
 	out := map[string]int{}
 	for _, t := range []string{"items", "locations", "categories", "movements", "users", "api_tokens"} {

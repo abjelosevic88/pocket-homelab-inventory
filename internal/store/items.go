@@ -9,12 +9,17 @@ import (
 	"time"
 )
 
+// visibleTo is the per-person rule for items: you see an item you own or one
+// that is shared with you through item_users. Takes (uid, uid).
+const visibleTo = `(i.user_id = ? OR EXISTS (SELECT 1 FROM item_users v WHERE v.item_id = i.id AND v.user_id = ?))`
+
 // ItemFilter narrows ListItems.
 type ItemFilter struct {
+	OwnedOnly  bool // only items the viewer owns (exports, import matching), not ones shared with them
 	Query      string
 	LocationID int64 // 0 = any, -1 = no location
 	CategoryID int64 // 0 = any, -1 = no category
-	UserID     int64 // 0 = any, -1 = household (no owner), >0 = linked to that user
+	UserID     int64 // 0 = any, -1 = not shared with anyone, >0 = linked to that user
 	Tag        string
 	Barcode    string
 	LowOnly    bool
@@ -26,7 +31,7 @@ type ItemFilter struct {
 
 const itemCols = `i.id, i.name, i.notes, i.category_id, i.location_id, i.quantity, i.unit, i.min_quantity,
 	i.barcode, i.brand, i.model, i.serial, i.purchase_date, i.price, i.expiry_date, i.tags, i.url, i.photo,
-	i.archived, i.created_at, i.updated_at, COALESCE(c.name, ''), COALESCE(l.name, '')`
+	i.archived, i.created_at, i.updated_at, COALESCE(i.user_id, 0), COALESCE(c.name, ''), COALESCE(l.name, '')`
 
 const itemFrom = ` FROM items i LEFT JOIN categories c ON c.id = i.category_id LEFT JOIN locations l ON l.id = i.location_id `
 
@@ -36,7 +41,7 @@ func scanItem(row interface{ Scan(...any) error }) (*Item, error) {
 	var archived int
 	if err := row.Scan(&it.ID, &it.Name, &it.Notes, &cat, &loc, &it.Quantity, &it.Unit, &it.MinQuantity,
 		&it.Barcode, &it.Brand, &it.Model, &it.Serial, &it.PurchaseDate, &it.Price, &it.ExpiryDate, &it.Tags, &it.URL, &it.Photo,
-		&archived, &it.CreatedAt, &it.UpdatedAt, &it.CategoryName, &it.LocationName); err != nil {
+		&archived, &it.CreatedAt, &it.UpdatedAt, &it.OwnerID, &it.CategoryName, &it.LocationName); err != nil {
 		return nil, notFound(err)
 	}
 	if cat.Valid {
@@ -88,10 +93,17 @@ func (s *Store) attachUsers(ctx context.Context, items []*Item) error {
 	return rows.Err()
 }
 
-// ListItems returns items matching the filter.
-func (s *Store) ListItems(ctx context.Context, f ItemFilter) ([]Item, error) {
+// ListItems returns the items uid can see that match the filter.
+func (s *Store) ListItems(ctx context.Context, uid int64, f ItemFilter) ([]Item, error) {
 	var where []string
 	var args []any
+	if f.OwnedOnly {
+		where = append(where, "i.user_id = ?")
+		args = append(args, uid)
+	} else {
+		where = append(where, visibleTo)
+		args = append(args, uid, uid)
+	}
 	if !f.Archived {
 		where = append(where, "i.archived = 0")
 	}
@@ -151,10 +163,7 @@ func (s *Store) ListItems(ctx context.Context, f ItemFilter) ([]Item, error) {
 	case "expiry":
 		order = "CASE WHEN i.expiry_date = '' THEN 1 ELSE 0 END, i.expiry_date, i.name COLLATE NOCASE"
 	}
-	q := `SELECT ` + itemCols + itemFrom
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
+	q := `SELECT ` + itemCols + itemFrom + " WHERE " + strings.Join(where, " AND ")
 	q += " ORDER BY " + order
 	if f.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", f.Limit)
@@ -186,9 +195,9 @@ func (s *Store) ListItems(ctx context.Context, f ItemFilter) ([]Item, error) {
 	return out, nil
 }
 
-// GetItem returns one item.
-func (s *Store) GetItem(ctx context.Context, id int64) (*Item, error) {
-	it, err := scanItem(s.DB.QueryRowContext(ctx, `SELECT `+itemCols+itemFrom+` WHERE i.id = ?`, id))
+// GetItem returns one item uid can see; anyone else's is ErrNotFound.
+func (s *Store) GetItem(ctx context.Context, uid, id int64) (*Item, error) {
+	it, err := scanItem(s.DB.QueryRowContext(ctx, `SELECT `+itemCols+itemFrom+` WHERE i.id = ? AND `+visibleTo, id, uid, uid))
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +231,12 @@ func nullID(id int64) any {
 	return id
 }
 
-// CreateItem inserts an item and records the opening quantity as a movement.
+// ownLocation / ownCategory keep an item's place and category inside its
+// owner's own lists: an id belonging to anyone else becomes NULL.
+const ownLocation = `(SELECT id FROM locations WHERE id = ? AND user_id = ?)`
+const ownCategory = `(SELECT id FROM categories WHERE id = ? AND user_id = ?)`
+
+// CreateItem inserts an item owned by actor and records the opening quantity as a movement.
 func (s *Store) CreateItem(ctx context.Context, it *Item, actor int64) error {
 	it.Tags = NormalizeTags(it.Tags)
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -230,9 +244,9 @@ func (s *Store) CreateItem(ctx context.Context, it *Item, actor int64) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	res, err := tx.ExecContext(ctx, `INSERT INTO items (name, notes, category_id, location_id, quantity, unit, min_quantity, barcode, brand, model, serial,
-		purchase_date, price, expiry_date, tags, url, photo, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		strings.TrimSpace(it.Name), it.Notes, it.CategoryID, it.LocationID, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
+	res, err := tx.ExecContext(ctx, `INSERT INTO items (user_id, name, notes, category_id, location_id, quantity, unit, min_quantity, barcode, brand, model, serial,
+		purchase_date, price, expiry_date, tags, url, photo, archived) VALUES (?, ?, ?, `+ownCategory+`, `+ownLocation+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		nullID(actor), strings.TrimSpace(it.Name), it.Notes, it.CategoryID, actor, it.LocationID, actor, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
 		it.Brand, it.Model, it.Serial, it.PurchaseDate, it.Price, it.ExpiryDate, it.Tags, it.URL, it.Photo, boolInt(it.Archived))
 	if err != nil {
 		return err
@@ -249,14 +263,17 @@ func (s *Store) CreateItem(ctx context.Context, it *Item, actor int64) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	fresh, err := s.GetItem(ctx, it.ID)
+	fresh, err := s.GetItem(ctx, actor, it.ID)
 	if err == nil {
 		*it = *fresh
 	}
 	return nil
 }
 
-// UpdateItem saves every editable field. A changed quantity is logged as a movement.
+// UpdateItem saves every editable field of an item actor can see. A changed
+// quantity is logged as a movement. Place, category and who it is shared with
+// belong to the item's owner: when someone it is shared with saves it, those
+// three stay as they were.
 func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int64) error {
 	it.Tags = NormalizeTags(it.Tags)
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -265,18 +282,35 @@ func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var before float64
-	if err := tx.QueryRowContext(ctx, `SELECT quantity FROM items WHERE id = ?`, it.ID).Scan(&before); err != nil {
+	var owner int64
+	var curLoc, curCat sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT i.quantity, COALESCE(i.user_id, 0), i.location_id, i.category_id FROM items i WHERE i.id = ? AND `+visibleTo, it.ID, actor, actor).
+		Scan(&before, &owner, &curLoc, &curCat); err != nil {
 		return notFound(err)
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE items SET name = ?, notes = ?, category_id = ?, location_id = ?, quantity = ?, unit = ?, min_quantity = ?, barcode = ?,
+	isOwner := owner == actor
+	if !isOwner {
+		it.LocationID, it.CategoryID = nil, nil
+		if curLoc.Valid {
+			v := curLoc.Int64
+			it.LocationID = &v
+		}
+		if curCat.Valid {
+			v := curCat.Int64
+			it.CategoryID = &v
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE items SET name = ?, notes = ?, category_id = `+ownCategory+`, location_id = `+ownLocation+`, quantity = ?, unit = ?, min_quantity = ?, barcode = ?,
 		brand = ?, model = ?, serial = ?, purchase_date = ?, price = ?, expiry_date = ?, tags = ?, url = ?, photo = ?, archived = ?, updated_at = ? WHERE id = ?`,
-		strings.TrimSpace(it.Name), it.Notes, it.CategoryID, it.LocationID, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
+		strings.TrimSpace(it.Name), it.Notes, it.CategoryID, owner, it.LocationID, owner, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
 		it.Brand, it.Model, it.Serial, it.PurchaseDate, it.Price, it.ExpiryDate, it.Tags, it.URL, it.Photo, boolInt(it.Archived), Now(), it.ID)
 	if err != nil {
 		return err
 	}
-	if err := setItemUsers(ctx, tx, it.ID, it.UserIDs); err != nil {
-		return err
+	if isOwner {
+		if err := setItemUsers(ctx, tx, it.ID, it.UserIDs); err != nil {
+			return err
+		}
 	}
 	if before != it.Quantity {
 		if note == "" {
@@ -289,14 +323,15 @@ func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	fresh, err := s.GetItem(ctx, it.ID)
+	fresh, err := s.GetItem(ctx, actor, it.ID)
 	if err == nil {
 		*it = *fresh
 	}
 	return nil
 }
 
-// AdjustQuantity adds delta (negative to take) and logs the movement. Quantity never goes below zero.
+// AdjustQuantity adds delta (negative to take) to an item actor can see and
+// logs the movement. Quantity never goes below zero.
 func (s *Store) AdjustQuantity(ctx context.Context, id int64, delta float64, note string, actor int64) (*Item, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -304,7 +339,7 @@ func (s *Store) AdjustQuantity(ctx context.Context, id int64, delta float64, not
 	}
 	defer tx.Rollback() //nolint:errcheck
 	var before float64
-	if err := tx.QueryRowContext(ctx, `SELECT quantity FROM items WHERE id = ?`, id).Scan(&before); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT i.quantity FROM items i WHERE i.id = ? AND `+visibleTo, id, actor, actor).Scan(&before); err != nil {
 		return nil, notFound(err)
 	}
 	after := before + delta
@@ -323,13 +358,13 @@ func (s *Store) AdjustQuantity(ctx context.Context, id int64, delta float64, not
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetItem(ctx, id)
+	return s.GetItem(ctx, actor, id)
 }
 
 // SetQuantity sets an absolute quantity and logs the difference.
 func (s *Store) SetQuantity(ctx context.Context, id int64, qty float64, note string, actor int64) (*Item, error) {
 	var before float64
-	if err := s.DB.QueryRowContext(ctx, `SELECT quantity FROM items WHERE id = ?`, id).Scan(&before); err != nil {
+	if err := s.DB.QueryRowContext(ctx, `SELECT i.quantity FROM items i WHERE i.id = ? AND `+visibleTo, id, actor, actor).Scan(&before); err != nil {
 		return nil, notFound(err)
 	}
 	if qty < 0 {
@@ -338,34 +373,51 @@ func (s *Store) SetQuantity(ctx context.Context, id int64, qty float64, note str
 	return s.AdjustQuantity(ctx, id, qty-before, note, actor)
 }
 
-// SetArchived hides or restores an item.
-func (s *Store) SetArchived(ctx context.Context, id int64, archived bool) error {
-	res, err := s.DB.ExecContext(ctx, `UPDATE items SET archived = ?, updated_at = ? WHERE id = ?`, boolInt(archived), Now(), id)
+// SetArchived hides or restores an item uid can see.
+func (s *Store) SetArchived(ctx context.Context, uid, id int64, archived bool) error {
+	res, err := s.DB.ExecContext(ctx, `UPDATE items AS i SET archived = ?, updated_at = ? WHERE i.id = ? AND `+visibleTo, boolInt(archived), Now(), id, uid, uid)
+	return affected(res, err)
+}
+
+// SetPhoto stores the photo file name ("" clears it) on an item uid can see.
+func (s *Store) SetPhoto(ctx context.Context, uid, id int64, photo string) error {
+	res, err := s.DB.ExecContext(ctx, `UPDATE items AS i SET photo = ?, updated_at = ? WHERE i.id = ? AND `+visibleTo, photo, Now(), id, uid, uid)
+	return affected(res, err)
+}
+
+// DeleteItem removes one of uid's items and its movements. Only the owner may
+// delete: someone it is shared with gets ErrForbidden, anyone else ErrNotFound.
+func (s *Store) DeleteItem(ctx context.Context, uid, id int64) error {
+	res, err := s.DB.ExecContext(ctx, `DELETE FROM items WHERE id = ? AND user_id = ?`, id, uid)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		if _, err := s.GetItem(ctx, uid, id); err == nil {
+			return ErrForbidden
+		}
 		return ErrNotFound
 	}
 	return nil
 }
 
-// SetPhoto stores the photo file name ("" clears it).
-func (s *Store) SetPhoto(ctx context.Context, id int64, photo string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE items SET photo = ?, updated_at = ? WHERE id = ?`, photo, Now(), id)
-	return err
-}
-
-// DeleteItem removes an item and its movements.
-func (s *Store) DeleteItem(ctx context.Context, id int64) error {
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM items WHERE id = ?`, id)
+// OwnedPhotos lists the photo files of every item uid owns (removed from disk
+// when the account is deleted, since its items go with it).
+func (s *Store) OwnedPhotos(ctx context.Context, uid int64) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT photo FROM items WHERE user_id = ? AND photo <> ''`, uid)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
 	}
-	return nil
+	return out, rows.Err()
 }
 
 const movementCols = `m.id, m.item_id, m.user_id, COALESCE(NULLIF(u.name, ''), u.email, ''), m.delta, m.quantity_after, m.note, m.created_at`
@@ -383,12 +435,12 @@ func scanMovement(row interface{ Scan(...any) error }, m *Movement) error {
 	return nil
 }
 
-// ListMovements returns the newest movements of an item.
-func (s *Store) ListMovements(ctx context.Context, itemID int64, limit int) ([]Movement, error) {
+// ListMovements returns the newest movements of an item uid can see.
+func (s *Store) ListMovements(ctx context.Context, uid, itemID int64, limit int) ([]Movement, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+movementCols+movementFrom+fmt.Sprintf(` WHERE m.item_id = ? ORDER BY m.id DESC LIMIT %d`, limit), itemID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+movementCols+movementFrom+`JOIN items i ON i.id = m.item_id`+fmt.Sprintf(` WHERE m.item_id = ? AND `+visibleTo+` ORDER BY m.id DESC LIMIT %d`, limit), itemID, uid, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -411,12 +463,17 @@ type ActivityRow struct {
 	Unit     string `json:"unit"`
 }
 
-// RecentActivity returns the latest movements across all items.
-func (s *Store) RecentActivity(ctx context.Context, limit int) ([]ActivityRow, error) {
+// RecentActivity returns the latest movements of the items uid can see
+// (ownedOnly: only of the items uid owns).
+func (s *Store) RecentActivity(ctx context.Context, uid int64, limit int, ownedOnly bool) ([]ActivityRow, error) {
 	if limit <= 0 {
 		limit = 30
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+movementCols+`, i.name, i.unit`+movementFrom+fmt.Sprintf(`JOIN items i ON i.id = m.item_id ORDER BY m.id DESC LIMIT %d`, limit))
+	scope, args := visibleTo, []any{uid, uid}
+	if ownedOnly {
+		scope, args = "i.user_id = ?", []any{uid}
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+movementCols+`, i.name, i.unit`+movementFrom+fmt.Sprintf(`JOIN items i ON i.id = m.item_id WHERE `+scope+` ORDER BY m.id DESC LIMIT %d`, limit), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -437,8 +494,8 @@ func (s *Store) RecentActivity(ctx context.Context, limit int) ([]ActivityRow, e
 	return out, rows.Err()
 }
 
-// DashboardStats computes the widget numbers.
-func (s *Store) DashboardStats(ctx context.Context, currency string, warnDays int) (*Dashboard, error) {
+// DashboardStats computes the widget numbers over the items uid can see.
+func (s *Store) DashboardStats(ctx context.Context, uid int64, currency string, warnDays int) (*Dashboard, error) {
 	d := &Dashboard{Currency: currency}
 	today := Today()
 	soon := time.Now().AddDate(0, 0, warnDays).Format("2006-01-02")
@@ -450,14 +507,14 @@ func (s *Store) DashboardStats(ctx context.Context, currency string, warnDays in
 		COALESCE(SUM(CASE WHEN expiry_date <> '' AND expiry_date > ? AND expiry_date <= ? THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN expiry_date <> '' AND expiry_date <= ? THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN substr(updated_at, 1, 10) = ? THEN 1 ELSE 0 END), 0)
-		FROM items WHERE archived = 0`, today, soon, today, time.Now().UTC().Format("2006-01-02")).Scan(
+		FROM items i WHERE i.archived = 0 AND `+visibleTo, today, soon, today, time.Now().UTC().Format("2006-01-02"), uid, uid).Scan(
 		&d.Items, &d.QuantityTotal, &d.LowStock, &d.TotalValue, &d.Expiring, &d.Expired, &d.UpdatedToday)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM items WHERE archived = 1`).Scan(&d.Archived)
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM locations`).Scan(&d.Locations)
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM categories`).Scan(&d.Categories)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM items i WHERE i.archived = 1 AND `+visibleTo, uid, uid).Scan(&d.Archived)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM locations WHERE user_id = ?`, uid).Scan(&d.Locations)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM categories WHERE user_id = ?`, uid).Scan(&d.Categories)
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&d.Users)
 	return d, nil
 }

@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -106,11 +108,36 @@ func (s *Server) firstOrSystemUser(ctx context.Context, email, name string) (*st
 		role = "admin"
 	}
 	u := &store.User{Email: email, Name: name, Role: role}
-	if err := s.store.CreateUser(ctx, u); err != nil {
+	if err := s.newUser(ctx, u); err != nil {
 		return nil, err
 	}
 	s.log.Info("auto-provisioned user", "email", email, "mode", s.cfg.AuthMode, "role", role)
 	return u, nil
+}
+
+// newUser creates an account and gives it what a fresh person starts with:
+// their own starter categories. The very first account also adopts rows made
+// before any account existed and, with DEMO_DATA, gets the demo household.
+func (s *Server) newUser(ctx context.Context, u *store.User) error {
+	n, err := s.store.CountUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.store.CreateUser(ctx, u); err != nil {
+		return err
+	}
+	if n == 0 {
+		if err := s.store.AdoptOrphans(ctx, u.ID); err != nil {
+			return err
+		}
+	}
+	if err := s.store.SeedDefaultCategories(ctx, u.ID); err != nil {
+		return err
+	}
+	if n == 0 && s.cfg.DemoData {
+		return s.seedDemo(ctx)
+	}
+	return nil
 }
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, id string, ttl time.Duration) {
@@ -126,7 +153,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "count users")
 		return
 	}
-	st, _ := s.store.GetSettings(r.Context())
+	st, _ := s.store.GetSettings(r.Context(), 0)
 	u, _ := s.resolveUser(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"needs_setup":   n == 0 && s.cfg.AuthMode == "local",
@@ -167,13 +194,13 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	u := &store.User{Email: in.Email, Name: in.Name, PasswordHash: string(hash), Role: "admin"}
-	if err := s.store.CreateUser(ctx, u); err != nil {
+	if err := s.newUser(ctx, u); err != nil {
 		s.fail(w, err, "create user")
 		return
 	}
-	st, _ := s.store.GetSettings(ctx)
+	st, _ := s.store.GetSettings(ctx, 0)
 	st.SetupComplete = true
-	_ = s.store.SaveSettings(ctx, st)
+	_ = s.store.SaveGlobalSettings(ctx, st)
 	id, err := s.store.CreateSession(ctx, u.ID, s.cfg.SessionTTL)
 	if err != nil {
 		s.fail(w, err, "create session")
@@ -259,7 +286,8 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 
 // ---- users (household members) ----
 
-// handleListUsers is open to every signed-in user so items can be linked to people.
+// handleListUsers is open to every signed-in user so items can be shared with
+// people (the account directory, not anyone's content).
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
@@ -273,11 +301,16 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if u := userFrom(r.Context()); u == nil || u.Role != "admin" {
-		writeErr(w, http.StatusForbidden, "only an admin can manage users")
+	if !isAdmin(r.Context()) {
+		writeErr(w, http.StatusForbidden, "only an admin can do this")
 		return false
 	}
 	return true
+}
+
+func isAdmin(ctx context.Context) bool {
+	u := userFrom(ctx)
+	return u != nil && u.Role == "admin"
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -311,7 +344,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		h, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 		u.PasswordHash = string(h)
 	}
-	if err := s.store.CreateUser(r.Context(), u); err != nil {
+	if err := s.newUser(r.Context(), u); err != nil {
 		s.fail(w, err, "create user")
 		return
 	}
@@ -388,9 +421,15 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Their items, places, categories and preferences go with the account
+	// (ON DELETE CASCADE); so do the photo files of their items.
+	photos, _ := s.store.OwnedPhotos(r.Context(), id)
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		s.fail(w, err, "delete user")
 		return
+	}
+	for _, p := range photos {
+		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, filepath.Base(p)))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

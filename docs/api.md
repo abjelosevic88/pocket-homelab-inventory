@@ -8,6 +8,8 @@ Authorization: Bearer pi_xxxxxxxx…
 
 Create tokens under **Settings → API tokens**. Dates are `YYYY-MM-DD`. Quantities are numbers (decimals allowed).
 
+Everything is per person. A token, session, Pocket Core device token or single sign-on all act as one account, and that account sees only its own items, places and categories plus the items someone shared with it (`user_ids`). Anyone else's id answers `404`. On an item shared with you, you may adjust, edit and archive it; its place, category, sharing and deleting it (`403`) stay with its owner (`owner_id`).
+
 For a ready-made client, [Pocket Homelab](https://pockethomelab.com/) (iPhone, iPad, Mac, Android) uses this API with a token: the items with − and +, the quick add, an item's page and editor, the shopping list, places and categories, the activity feed. See the README's [Companion app](../README.md#companion-app-pocket-homelab) section.
 
 ## Items
@@ -33,7 +35,7 @@ For a ready-made client, [Pocket Homelab](https://pockethomelab.com/) (iPhone, i
   "quantity": 8, "unit": "pcs", "min_quantity": 4,
   "location_id": 3,            "location": "Garage",        // id wins; a name creates the place if missing
   "category_id": 2,            "category": "Electronics",   // same
-  "user_ids": [1, 2],          // people it belongs to; [] = whole household
+  "user_ids": [1, 2],          // people it is shared with ("whose is it?"); [] = only you
   "tags": "power, spare",
   "notes": "Top drawer of the red toolbox.",
   "brand": "Panasonic", "model": "Eneloop", "serial": "", "barcode": "4902580700416",
@@ -74,15 +76,15 @@ Every key except `name` is optional. The response adds `id`, `location_name`, `c
 | `GET` | `/auth/status` | `{needs_setup, auth_mode, authenticated, user, version, title}` |
 | `POST` | `/auth/setup` · `/auth/login` · `/auth/logout` | |
 | `GET` · `PUT` | `/auth/me` | Own profile, `{"name","email","current_password","new_password"}` |
-| `GET` · `PUT` | `/settings` | `{title, currency, default_unit, landing, expiry_warn_days}` |
-| `GET` | `/settings/system` | Version, paths, sizes, counts. |
+| `GET` · `PUT` | `/settings` | `{title, currency, default_unit, landing, expiry_warn_days}`. Everything but `title` is your own preference; `title` is box-wide and only an admin's change is kept. |
+| `GET` | `/settings/system` | Version and runtime; admins also get paths, sizes and box-wide counts. |
 | `GET` · `POST` · `DELETE` | `/tokens` | Personal tokens. The plaintext is returned once on create. |
-| `GET` | `/backup` | Consistent SQLite copy. |
-| `GET` | `/export.json` · `/export.csv` | Full export / one row per item. |
-| `POST` | `/import` | The JSON export. Places matched by name, items by name + place (update or create). |
+| `GET` | `/backup` | Consistent SQLite copy of the whole box. Admin only. |
+| `GET` | `/export.json` · `/export.csv` | Your own data: the items you own, your places and categories, their history / one row per item. |
+| `POST` | `/import` | The JSON export, into your own inventory. Places matched by name, items by name + place among your items (update or create). |
 | `POST` | `/import.csv` | CSV body or `multipart/form-data` field `file`. Needs a `name` column; others optional (see export). `owners` is `;`-separated user names. |
 
-Unauthenticated: `/healthz`, `/readyz`, `/metrics` (Prometheus; disable with `METRICS_ENABLED=false` or block at the proxy).
+Unauthenticated: `/healthz`, `/readyz`, `/metrics` (Prometheus row counts and HTTP stats only; disable with `METRICS_ENABLED=false` or block at the proxy).
 
 ## Homepage widget
 

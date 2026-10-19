@@ -10,7 +10,7 @@ import (
 // ---- locations ----
 
 func (s *Server) handleListLocations(w http.ResponseWriter, r *http.Request) {
-	l, err := s.store.ListLocations(r.Context())
+	l, err := s.store.ListLocations(r.Context(), actorID(r.Context()))
 	if err != nil {
 		s.fail(w, err, "list locations")
 		return
@@ -29,7 +29,7 @@ func (s *Server) handleCreateLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l := &store.Location{Name: in.Name, Description: strings.TrimSpace(in.Description)}
-	if err := s.store.CreateLocation(r.Context(), l); err != nil {
+	if err := s.store.CreateLocation(r.Context(), actorID(r.Context()), l); err != nil {
 		s.fail(w, err, "create location")
 		return
 	}
@@ -37,7 +37,7 @@ func (s *Server) handleCreateLocation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateLocation(w http.ResponseWriter, r *http.Request) {
-	l, err := s.store.GetLocation(r.Context(), idParam(r, "id"))
+	l, err := s.store.GetLocation(r.Context(), actorID(r.Context()), idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get location")
 		return
@@ -52,16 +52,16 @@ func (s *Server) handleUpdateLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l.Name, l.Description = in.Name, strings.TrimSpace(in.Description)
-	if err := s.store.UpdateLocation(r.Context(), l); err != nil {
+	if err := s.store.UpdateLocation(r.Context(), actorID(r.Context()), l); err != nil {
 		s.fail(w, err, "update location")
 		return
 	}
-	l, _ = s.store.GetLocation(r.Context(), l.ID)
+	l, _ = s.store.GetLocation(r.Context(), actorID(r.Context()), l.ID)
 	writeJSON(w, http.StatusOK, l)
 }
 
 func (s *Server) handleDeleteLocation(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteLocation(r.Context(), idParam(r, "id")); err != nil {
+	if err := s.store.DeleteLocation(r.Context(), actorID(r.Context()), idParam(r, "id")); err != nil {
 		s.fail(w, err, "delete location")
 		return
 	}
@@ -76,7 +76,7 @@ func (s *Server) handleReorderLocations(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := s.store.ReorderLocations(r.Context(), in.IDs); err != nil {
+	if err := s.store.ReorderLocations(r.Context(), actorID(r.Context()), in.IDs); err != nil {
 		s.fail(w, err, "reorder locations")
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) handleReorderLocations(w http.ResponseWriter, r *http.Request) 
 // ---- categories ----
 
 func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
-	c, err := s.store.ListCategories(r.Context())
+	c, err := s.store.ListCategories(r.Context(), actorID(r.Context()))
 	if err != nil {
 		s.fail(w, err, "list categories")
 		return
@@ -105,7 +105,7 @@ func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := &store.Category{Name: in.Name, Color: in.Color}
-	if err := s.store.CreateCategory(r.Context(), c); err != nil {
+	if err := s.store.CreateCategory(r.Context(), actorID(r.Context()), c); err != nil {
 		s.fail(w, err, "create category")
 		return
 	}
@@ -113,7 +113,7 @@ func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
-	c, err := s.store.GetCategory(r.Context(), idParam(r, "id"))
+	c, err := s.store.GetCategory(r.Context(), actorID(r.Context()), idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get category")
 		return
@@ -128,16 +128,16 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.Name, c.Color = in.Name, in.Color
-	if err := s.store.UpdateCategory(r.Context(), c); err != nil {
+	if err := s.store.UpdateCategory(r.Context(), actorID(r.Context()), c); err != nil {
 		s.fail(w, err, "update category")
 		return
 	}
-	c, _ = s.store.GetCategory(r.Context(), c.ID)
+	c, _ = s.store.GetCategory(r.Context(), actorID(r.Context()), c.ID)
 	writeJSON(w, http.StatusOK, c)
 }
 
 func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteCategory(r.Context(), idParam(r, "id")); err != nil {
+	if err := s.store.DeleteCategory(r.Context(), actorID(r.Context()), idParam(r, "id")); err != nil {
 		s.fail(w, err, "delete category")
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleReorderCategories(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := s.store.ReorderCategories(r.Context(), in.IDs); err != nil {
+	if err := s.store.ReorderCategories(r.Context(), actorID(r.Context()), in.IDs); err != nil {
 		s.fail(w, err, "reorder categories")
 		return
 	}
@@ -162,7 +162,7 @@ func (s *Server) handleReorderCategories(w http.ResponseWriter, r *http.Request)
 // ---- tags ----
 
 func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
-	t, err := s.store.ListTags(r.Context())
+	t, err := s.store.ListTags(r.Context(), actorID(r.Context()))
 	if err != nil {
 		s.fail(w, err, "list tags")
 		return

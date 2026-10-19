@@ -42,11 +42,13 @@ function useSettingsForm() {
 
 function General() {
   const { f, setF, save, busy } = useSettingsForm()
+  const { user } = useApp()
   if (!f) return <Loading />
   return (
     <Card title="Preferences">
       <div className="grid" style={{ gap: 14, maxWidth: 560 }}>
-        <Field label="App title" help="Shown in the sidebar and browser tab."><input value={f.title} onChange={e => setF({ ...f, title: e.target.value })} maxLength={40} /></Field>
+        <p className="muted small">These are your own preferences; everyone else keeps theirs.</p>
+        {user?.role === 'admin' && <Field label="App title" help="Box-wide: shown to everyone in the sidebar, browser tab and on the sign-in page."><input value={f.title} onChange={e => setF({ ...f, title: e.target.value })} maxLength={40} /></Field>}
         <div className="two-col tight">
           <Field label="Currency" help="ISO code for prices and the total value."><input value={f.currency} onChange={e => setF({ ...f, currency: e.target.value.toUpperCase() })} maxLength={3} placeholder="EUR" /></Field>
           <Field label="Default unit" help="Pre-filled for new items."><input value={f.default_unit} onChange={e => setF({ ...f, default_unit: e.target.value })} maxLength={16} placeholder="pcs" /></Field>
@@ -68,7 +70,7 @@ function Users() {
   const run = async (fn: () => Promise<unknown>, msg: string) => { try { await fn(); await reloadMeta(); toast(msg) } catch (e) { toast((e as Error).message, 'err') } }
   return (
     <Card title="Household" actions={isAdmin && <button className="btn primary sm" onClick={() => setEdit({ role: 'member' })}>+ Add user</button>}>
-      <p className="muted">Everyone here signs in with their own account and sees the same inventory. Items can be linked to one or more people (“whose is it?”), and every quantity change records who made it. Admins manage users; members can do everything else.</p>
+      <p className="muted">Everyone here signs in with their own account and has their own inventory: items, places and categories are private to the person who added them. Share an item with others from its “Whose is it? / shared with” field; they then see it and can use it. Every quantity change records who made it. Admins manage accounts and the app title, nothing more: they do not see anyone else's items.</p>
       <table className="table compact">
         <thead><tr><th /><th>Name</th><th>Email</th><th>Role</th><th /></tr></thead>
         <tbody>
@@ -85,7 +87,7 @@ function Users() {
       </table>
       {status?.auth_mode !== 'local' && <p className="muted small mt">Auth mode is <code>{status?.auth_mode}</code>: users are created automatically on first visit; passwords are not used here.</p>}
       {edit && <UserModal user={edit} local={status?.auth_mode === 'local'} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); reloadMeta() }} />}
-      {del && <Confirm title={`Remove ${del.name || del.email}?`} message="Their account and sessions are deleted. Items stay; they are just no longer linked to this person and their past changes show without a name." onCancel={() => setDel(null)} onConfirm={() => { const d = del; setDel(null); run(() => api.del(`${V1}/users/${d.id}`), 'User removed') }} />}
+      {del && <Confirm title={`Remove ${del.name || del.email}?`} message="Their account, sessions and their own items, places and categories are deleted. Items other people shared with them stay with their owners; their past changes there show without a name." onCancel={() => setDel(null)} onConfirm={() => { const d = del; setDel(null); run(() => api.del(`${V1}/users/${d.id}`), 'User removed') }} />}
     </Card>
   )
 }
@@ -167,7 +169,7 @@ function Tokens() {
 
 function Data() {
   const { toast } = useToast()
-  const { reloadMeta } = useApp()
+  const { reloadMeta, user } = useApp()
   const [busy, setBusy] = useState(false)
   const importJSON = async (file: File) => {
     setBusy(true)
@@ -185,12 +187,13 @@ function Data() {
   }
   return (
     <div className="two-col">
-      <Card title="Backup">
+      {user?.role === 'admin' && <Card title="Backup">
         <p className="muted">A consistent copy of the SQLite database (<code>VACUUM INTO</code>). Photos live next to it in <code>photos/</code>. Restore by stopping the app and replacing <code>pocket-inventory.db</code> in the data directory.</p>
+        <p className="muted small">Admin only: the database holds every account's data.</p>
         <a className="btn primary" href={`${V1}/backup`}>Download database</a>
-      </Card>
+      </Card>}
       <Card title="Export & import">
-        <p className="muted">JSON (full, re-importable) or CSV (one row per item — open it in a spreadsheet, or use it to bulk-load a new inventory).</p>
+        <p className="muted">Your own data: the items you added (not ones shared with you), your places and categories. JSON (full, re-importable) or CSV (one row per item — open it in a spreadsheet, or use it to bulk-load a new inventory). Imports go into your inventory.</p>
         <div className="row mb wrap"><a className="btn" href={`${V1}/export.json`}>Export JSON</a><a className="btn" href={`${V1}/export.csv`}>Export CSV</a></div>
         <div className="row wrap">
           <label className="btn ghost">{busy ? 'Importing…' : 'Import JSON…'}<input type="file" accept="application/json" hidden onChange={e => e.target.files?.[0] && importJSON(e.target.files[0])} /></label>
@@ -215,11 +218,11 @@ function About() {
             <tr><th>Version</th><td className="mono">{String(data.version)}</td></tr>
             <tr><th>Runtime</th><td className="mono">{String(data.go)} · {String(data.os)}/{String(data.arch)}</td></tr>
             <tr><th>Auth mode</th><td className="mono">{String(data.auth_mode)}</td></tr>
-            <tr><th>Database</th><td className="mono">{String(data.db_path)} · {(Number(data.db_bytes) / 1024).toFixed(0)} KB</td></tr>
-            <tr><th>Photos</th><td className="mono">{String(data.photos)} files · {(Number(data.photo_bytes) / 1024 / 1024).toFixed(1)} MB</td></tr>
+            {data.db_path !== undefined && <tr><th>Database</th><td className="mono">{String(data.db_path)} · {(Number(data.db_bytes) / 1024).toFixed(0)} KB</td></tr>}
+            {data.photos !== undefined && <tr><th>Photos</th><td className="mono">{String(data.photos)} files · {(Number(data.photo_bytes) / 1024 / 1024).toFixed(1)} MB</td></tr>}
             <tr><th>Timezone</th><td className="mono">{String(data.timezone)}</td></tr>
             <tr><th>Uptime</th><td className="mono">{String(data.uptime)}</td></tr>
-            <tr><th>Rows</th><td className="mono">{counts.items} items · {counts.locations} places · {counts.categories} categories · {counts.movements} movements · {counts.users} users</td></tr>
+            {data.counts !== undefined && <tr><th>Rows (all accounts)</th><td className="mono">{counts.items} items · {counts.locations} places · {counts.categories} categories · {counts.movements} movements · {counts.users} users</td></tr>}
           </tbody>
         </table>
       )}

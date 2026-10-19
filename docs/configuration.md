@@ -45,7 +45,7 @@ In `local` mode a configured provider adds a "Sign in with …" button above the
 
 ## In-app settings
 
-Under **Settings → General**: app title, currency code (for prices and the total value), default unit for new items, expiry warning window in days, and which page opens first.
+Under **Settings → General**, each person sets their own currency code (for prices and the total value), default unit for new items, expiry warning window in days, and which page opens first. The app title is box-wide and only an admin can change it.
 
 ## Forgot your password?
 

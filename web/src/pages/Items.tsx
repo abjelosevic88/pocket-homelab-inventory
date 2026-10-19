@@ -115,10 +115,10 @@ export default function Items() {
         <div className="filters">
           {users.length > 1 && <>
             <span className="lbl">Whose:</span>
-            <button className={`chip ${!person ? 'active' : ''}`} onClick={() => set('user', '')}>Anyone</button>
+            <button className={`chip ${!person ? 'active' : ''}`} onClick={() => set('user', '')}>All</button>
             <button className={`chip ${person === 'me' ? 'active' : ''}`} onClick={() => set('user', person === 'me' ? '' : 'me')}>Mine</button>
             {users.filter(u => u.id !== user?.id).map(u => <button key={u.id} className={`chip ${person === String(u.id) ? 'active' : ''}`} onClick={() => set('user', person === String(u.id) ? '' : String(u.id))}>{u.name || u.email}</button>)}
-            <button className={`chip ${person === 'none' ? 'active' : ''}`} onClick={() => set('user', person === 'none' ? '' : 'none')}>Household</button>
+            <button className={`chip ${person === 'none' ? 'active' : ''}`} onClick={() => set('user', person === 'none' ? '' : 'none')} title="Items you have not shared with anyone">Not shared</button>
             {tags.data && tags.data.length > 0 && <span className="lbl" style={{ marginLeft: 8 }}>Tags:</span>}
           </>}
           {tags.data?.map(t => <button key={t} className={`chip ${tag.toLowerCase() === t.toLowerCase() ? 'active' : ''}`} onClick={() => set('tag', tag.toLowerCase() === t.toLowerCase() ? '' : t)}>#{t}</button>)}
@@ -183,9 +183,12 @@ function ItemRow({ it, currency, onOpen, onAdjust }: { it: Item; currency: strin
 }
 
 export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onClose: () => void; onSaved: () => void }) {
-  const { settings, users, locations, categories, reloadMeta } = useApp()
+  const { settings, users, locations, categories, reloadMeta, user } = useApp()
   const { toast } = useToast()
   const isNew = !item.id
+  // Someone else's item shared with you: you can use and edit it, but its place,
+  // category, who it is shared with and deleting it stay with its owner.
+  const isOwner = isNew || !item.owner_id || item.owner_id === user?.id
   const [f, setF] = useState({
     name: item.name || '', notes: item.notes || '', quantity: item.quantity ?? 1, unit: item.unit ?? (settings?.default_unit || ''), min_quantity: item.min_quantity ?? 0,
     location_id: item.location_id ? String(item.location_id) : '', category_id: item.category_id ? String(item.category_id) : '',
@@ -240,15 +243,19 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
           <Field label="Unit"><input value={f.unit} onChange={e => setF({ ...f, unit: e.target.value })} placeholder="pcs, kg, l, box…" maxLength={16} list="units" /><datalist id="units"><option value="pcs" /><option value="kg" /><option value="g" /><option value="l" /><option value="ml" /><option value="box" /><option value="pack" /><option value="roll" /><option value="pair" /><option value="set" /></datalist></Field>
           <Field label="Alert below" help="0 = no low-stock alert"><input type="number" inputMode="decimal" step="any" min={0} value={f.min_quantity} onChange={e => setF({ ...f, min_quantity: Number(e.target.value) })} /></Field>
         </div>
-        <div className="two-col tight">
+        {!isOwner && <p className="muted small">Shared with you by its owner. Place, category and sharing are theirs to change.</p>}
+        {isOwner ? <div className="two-col tight">
           <Field label="Place" help="Type a new name to create a place on the spot.">
             <Select value={f.location_id} onChange={v => setF({ ...f, location_id: v })} placeholder="— none —" options={locations.map(l => ({ value: String(l.id), label: l.name }))} onCreate={async name => { const l = await api.post<Location>(`${V1}/locations`, { name }); await reloadMeta(); return String(l.id) }} createLabel="New place" clearLabel="No place" />
           </Field>
           <Field label="Category">
             <Select value={f.category_id} onChange={v => setF({ ...f, category_id: v })} placeholder="— none —" options={categories.map(c => ({ value: String(c.id), label: c.name }))} onCreate={async name => { const c = await api.post<Category>(`${V1}/categories`, { name }); await reloadMeta(); return String(c.id) }} createLabel="New category" clearLabel="No category" />
           </Field>
-        </div>
-        {users.length > 1 && <Field label="Whose is it?" help="Pick one or more people; leave on “Everyone” for shared household things."><PeoplePicker users={users} value={f.user_ids} onChange={ids => setF({ ...f, user_ids: ids })} /></Field>}
+        </div> : <div className="two-col tight">
+          <Field label="Place"><input value={item.location_name || '—'} disabled /></Field>
+          <Field label="Category"><input value={item.category_name || '—'} disabled /></Field>
+        </div>}
+        {isOwner && users.length > 1 && <Field label="Whose is it? / shared with" help="Your items are yours alone. Pick people to share this one with: they see it and can use it."><PeoplePicker users={users} value={f.user_ids} onChange={ids => setF({ ...f, user_ids: ids })} /></Field>}
         <Field label="Tags" help="Comma separated."><input value={f.tags} onChange={e => setF({ ...f, tags: e.target.value })} placeholder="spare, camping, important" /></Field>
         <Field label="Notes"><textarea value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} rows={2} placeholder="Where exactly, what it is for, anything worth remembering." /></Field>
 
@@ -291,7 +298,7 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
 
         <div className="form-actions">
           {item.id && <>
-            <button type="button" className="btn ghost danger-text" onClick={() => setConfirm('delete')}>Delete</button>
+            {isOwner && <button type="button" className="btn ghost danger-text" onClick={() => setConfirm('delete')}>Delete</button>}
             <button type="button" className="btn ghost" onClick={() => archive(!item.archived)}>{item.archived ? 'Restore' : 'Archive'}</button>
           </>}
           <span className="spacer" />

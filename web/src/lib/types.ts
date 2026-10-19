@@ -35,6 +35,7 @@ export interface Item {
   archived: boolean
   created_at: string
   updated_at: string
+  owner_id: number
   user_ids: number[]
   users: UserRef[]
   category_name: string

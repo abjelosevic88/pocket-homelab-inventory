@@ -1,7 +1,8 @@
 package store
 
 // User is an account that can sign in. The first user is the admin; admins
-// manage other users, everyone else can do everything with items.
+// manage accounts and box-wide settings. Everyone's items, places and
+// categories are their own; admins get no extra access to them.
 type User struct {
 	ID           int64  `json:"id"`
 	Email        string `json:"email"`
@@ -71,7 +72,9 @@ type Item struct {
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
 
-	// People the item belongs to / is shared with. Empty = the whole household.
+	// OwnerID is the person who created the item; only they see it unless it is
+	// shared. UserIDs / Users are the people it is shared with ("whose is it?").
+	OwnerID int64     `json:"owner_id"`
 	UserIDs []int64   `json:"user_ids"`
 	Users   []UserRef `json:"users"`
 
@@ -93,7 +96,8 @@ type Movement struct {
 	CreatedAt     string  `json:"created_at"`
 }
 
-// Settings are user-tunable preferences stored as key/value pairs.
+// Settings merges the box-wide settings (Title, setup flags; admin-only to
+// change) with the signed-in person's own preferences (the rest).
 type Settings struct {
 	Title          string `json:"title"`
 	Currency       string `json:"currency"`     // ISO code shown next to prices

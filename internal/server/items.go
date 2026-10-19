@@ -42,7 +42,7 @@ func filterFrom(r *http.Request) store.ItemFilter {
 	}
 	switch q.Get("user") {
 	case "", "any":
-	case "none", "household":
+	case "none", "household", "unshared":
 		f.UserID = -1
 	case "me":
 		f.UserID = actorID(r.Context())
@@ -53,7 +53,7 @@ func filterFrom(r *http.Request) store.ItemFilter {
 }
 
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListItems(r.Context(), filterFrom(r))
+	items, err := s.store.ListItems(r.Context(), actorID(r.Context()), filterFrom(r))
 	if err != nil {
 		s.fail(w, err, "list items")
 		return
@@ -68,7 +68,7 @@ func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "barcode is required")
 		return
 	}
-	items, err := s.store.ListItems(r.Context(), store.ItemFilter{Barcode: code, Archived: true, Limit: 1})
+	items, err := s.store.ListItems(r.Context(), actorID(r.Context()), store.ItemFilter{Barcode: code, Archived: true, Limit: 1})
 	if err != nil {
 		s.fail(w, err, "lookup")
 		return
@@ -81,12 +81,13 @@ func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
-	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	uid := actorID(r.Context())
+	it, err := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get item")
 		return
 	}
-	moves, _ := s.store.ListMovements(r.Context(), it.ID, 30)
+	moves, _ := s.store.ListMovements(r.Context(), uid, it.ID, 30)
 	writeJSON(w, http.StatusOK, map[string]any{"item": it, "movements": moves})
 }
 
@@ -135,9 +136,17 @@ func (in itemInput) validate() string {
 	return ""
 }
 
-// apply copies the input onto an item, resolving location/category names.
+// apply copies the input onto an item, resolving location/category names in
+// the item owner's own lists (owner = the item's creator; actor for new items).
+// Names that do not exist yet are created for the owner only when the owner is
+// the one saving; the store keeps place/category as they were otherwise.
 func (s *Server) apply(r *http.Request, it *store.Item, in itemInput) error {
 	ctx := r.Context()
+	owner := it.OwnerID
+	if owner == 0 {
+		owner = actorID(ctx)
+	}
+	mayCreate := owner == actorID(ctx)
 	it.Name = strings.TrimSpace(in.Name)
 	it.Notes = strings.TrimSpace(in.Notes)
 	it.Unit = strings.TrimSpace(in.Unit)
@@ -165,11 +174,11 @@ func (s *Server) apply(r *http.Request, it *store.Item, in itemInput) error {
 	if in.LocationID != nil && *in.LocationID <= 0 {
 		it.LocationID = nil
 	}
-	if name := strings.TrimSpace(in.Location); name != "" && it.LocationID == nil {
-		l, err := s.store.FindLocationByName(ctx, name)
+	if name := strings.TrimSpace(in.Location); name != "" && it.LocationID == nil && mayCreate {
+		l, err := s.store.FindLocationByName(ctx, owner, name)
 		if err != nil {
 			l = &store.Location{Name: name}
-			if err := s.store.CreateLocation(ctx, l); err != nil {
+			if err := s.store.CreateLocation(ctx, owner, l); err != nil {
 				return err
 			}
 		}
@@ -179,11 +188,11 @@ func (s *Server) apply(r *http.Request, it *store.Item, in itemInput) error {
 	if in.CategoryID != nil && *in.CategoryID <= 0 {
 		it.CategoryID = nil
 	}
-	if name := strings.TrimSpace(in.Category); name != "" && it.CategoryID == nil {
-		c, err := s.store.FindCategoryByName(ctx, name)
+	if name := strings.TrimSpace(in.Category); name != "" && it.CategoryID == nil && mayCreate {
+		c, err := s.store.FindCategoryByName(ctx, owner, name)
 		if err != nil {
 			c = &store.Category{Name: name}
-			if err := s.store.CreateCategory(ctx, c); err != nil {
+			if err := s.store.CreateCategory(ctx, owner, c); err != nil {
 				return err
 			}
 		}
@@ -202,7 +211,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
-	st, _ := s.store.GetSettings(r.Context())
+	st, _ := s.store.GetSettings(r.Context(), actorID(r.Context()))
 	it := &store.Item{Quantity: 1, Unit: st.DefaultUnit}
 	if err := s.apply(r, it, in); err != nil {
 		s.fail(w, err, "resolve places")
@@ -212,7 +221,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "create item")
 		return
 	}
-	s.publish("inventory.item_created", fmt.Sprintf("item:%d", it.ID), map[string]any{
+	s.publish(userFrom(r.Context()), "inventory.item_created", fmt.Sprintf("item:%d", it.ID), map[string]any{
 		"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
 		"category_id": it.CategoryID, "location_id": it.LocationID, "tags": it.Tags,
 	})
@@ -220,7 +229,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
-	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	it, err := s.store.GetItem(r.Context(), actorID(r.Context()), idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get item")
 		return
@@ -246,13 +255,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
-	id := idParam(r, "id")
-	it, err := s.store.GetItem(r.Context(), id)
+	id, uid := idParam(r, "id"), actorID(r.Context())
+	it, err := s.store.GetItem(r.Context(), uid, id)
 	if err != nil {
 		s.fail(w, err, "get item")
 		return
 	}
-	if err := s.store.DeleteItem(r.Context(), id); err != nil {
+	if err := s.store.DeleteItem(r.Context(), uid, id); err != nil {
 		s.fail(w, err, "delete item")
 		return
 	}
@@ -289,7 +298,7 @@ func (s *Server) handleAdjustItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "adjust quantity")
 		return
 	}
-	s.publish("inventory.adjusted", fmt.Sprintf("item:%d", it.ID), map[string]any{
+	s.publish(userFrom(r.Context()), "inventory.adjusted", fmt.Sprintf("item:%d", it.ID), map[string]any{
 		"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
 		"delta": in.Delta, "set_to": in.Quantity, "note": strings.TrimSpace(in.Note), "low": it.MinQuantity > 0 && it.Quantity <= it.MinQuantity,
 	})
@@ -297,13 +306,14 @@ func (s *Server) handleAdjustItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleArchiveItem(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.SetArchived(r.Context(), idParam(r, "id"), true); err != nil {
+	uid := actorID(r.Context())
+	if err := s.store.SetArchived(r.Context(), uid, idParam(r, "id"), true); err != nil {
 		s.fail(w, err, "archive item")
 		return
 	}
-	it, _ := s.store.GetItem(r.Context(), idParam(r, "id"))
+	it, _ := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
 	if it != nil {
-		s.publish("inventory.item_archived", fmt.Sprintf("item:%d", it.ID), map[string]any{
+		s.publish(userFrom(r.Context()), "inventory.item_archived", fmt.Sprintf("item:%d", it.ID), map[string]any{
 			"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
 		})
 	}
@@ -311,16 +321,22 @@ func (s *Server) handleArchiveItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUnarchiveItem(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.SetArchived(r.Context(), idParam(r, "id"), false); err != nil {
+	uid := actorID(r.Context())
+	if err := s.store.SetArchived(r.Context(), uid, idParam(r, "id"), false); err != nil {
 		s.fail(w, err, "unarchive item")
 		return
 	}
-	it, _ := s.store.GetItem(r.Context(), idParam(r, "id"))
+	it, _ := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
 	writeJSON(w, http.StatusOK, it)
 }
 
 func (s *Server) handleItemMovements(w http.ResponseWriter, r *http.Request) {
-	m, err := s.store.ListMovements(r.Context(), idParam(r, "id"), int(queryInt(r, "limit")))
+	uid := actorID(r.Context())
+	if _, err := s.store.GetItem(r.Context(), uid, idParam(r, "id")); err != nil {
+		s.fail(w, err, "movements")
+		return
+	}
+	m, err := s.store.ListMovements(r.Context(), uid, idParam(r, "id"), int(queryInt(r, "limit")))
 	if err != nil {
 		s.fail(w, err, "movements")
 		return
@@ -329,7 +345,7 @@ func (s *Server) handleItemMovements(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
-	a, err := s.store.RecentActivity(r.Context(), int(queryInt(r, "limit")))
+	a, err := s.store.RecentActivity(r.Context(), actorID(r.Context()), int(queryInt(r, "limit")), false)
 	if err != nil {
 		s.fail(w, err, "activity")
 		return
@@ -342,7 +358,8 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 var photoExt = map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif", "image/heic": ".heic"}
 
 func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
-	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	uid := actorID(r.Context())
+	it, err := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get item")
 		return
@@ -388,16 +405,16 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	if it.Photo != "" {
 		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, it.Photo))
 	}
-	if err := s.store.SetPhoto(r.Context(), it.ID, name); err != nil {
+	if err := s.store.SetPhoto(r.Context(), uid, it.ID, name); err != nil {
 		s.fail(w, err, "save photo")
 		return
 	}
-	it, _ = s.store.GetItem(r.Context(), it.ID)
+	it, _ = s.store.GetItem(r.Context(), uid, it.ID)
 	writeJSON(w, http.StatusOK, it)
 }
 
 func (s *Server) handleGetPhoto(w http.ResponseWriter, r *http.Request) {
-	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	it, err := s.store.GetItem(r.Context(), actorID(r.Context()), idParam(r, "id"))
 	if err != nil || it.Photo == "" {
 		writeErr(w, http.StatusNotFound, "no photo")
 		return
@@ -407,14 +424,15 @@ func (s *Server) handleGetPhoto(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
-	it, err := s.store.GetItem(r.Context(), idParam(r, "id"))
+	uid := actorID(r.Context())
+	it, err := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get item")
 		return
 	}
 	if it.Photo != "" {
 		_ = os.Remove(filepath.Join(s.cfg.PhotoDir, filepath.Base(it.Photo)))
-		_ = s.store.SetPhoto(r.Context(), it.ID, "")
+		_ = s.store.SetPhoto(r.Context(), uid, it.ID, "")
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -422,8 +440,9 @@ func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 // ---- dashboard / shopping ----
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	st, _ := s.store.GetSettings(r.Context())
-	d, err := s.store.DashboardStats(r.Context(), st.Currency, st.ExpiryWarnDays)
+	uid := actorID(r.Context())
+	st, _ := s.store.GetSettings(r.Context(), uid)
+	d, err := s.store.DashboardStats(r.Context(), uid, st.Currency, st.ExpiryWarnDays)
 	if err != nil {
 		s.fail(w, err, "dashboard")
 		return
@@ -441,8 +460,9 @@ type ShoppingGroup struct {
 // or near their expiry date.
 func (s *Server) handleShopping(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	st, _ := s.store.GetSettings(ctx)
-	low, err := s.store.ListItems(ctx, store.ItemFilter{LowOnly: true, Sort: "location"})
+	uid := actorID(ctx)
+	st, _ := s.store.GetSettings(ctx, uid)
+	low, err := s.store.ListItems(ctx, uid, store.ItemFilter{LowOnly: true, Sort: "location"})
 	if err != nil {
 		s.fail(w, err, "shopping")
 		return
@@ -468,7 +488,7 @@ func (s *Server) handleShopping(w http.ResponseWriter, r *http.Request) {
 	for _, n := range names {
 		out = append(out, ShoppingGroup{Location: n, Items: groups[n]})
 	}
-	expiring, _ := s.store.ListItems(ctx, store.ItemFilter{Expiring: st.ExpiryWarnDays, Sort: "expiry"})
+	expiring, _ := s.store.ListItems(ctx, uid, store.ItemFilter{Expiring: st.ExpiryWarnDays, Sort: "expiry"})
 	if expiring == nil {
 		expiring = []store.Item{}
 	}

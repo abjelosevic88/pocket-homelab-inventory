@@ -19,7 +19,7 @@ Most inventory apps die because entering things is a chore. This one is built ar
 
 - **Add something in one line.** A quick-add box at the top of the list: name, how many, where. Enter. Done. The full form (brand, serial, price, warranty, barcode, photo) is there when you want it, folded away when you don't.
 - **Tap − when you use one, + when you buy more.** Every item has a plus/minus right on the list. Set an *alert below* level and the item appears on the **shopping list** by itself, grouped by place, with a *Bought* button that puts it back.
-- **Know whose it is.** Several people sign in to the same inventory. An item can belong to one person, a few, or the whole household. Filter by *Mine*, by a name, or by *Household*. Every quantity change records who did it.
+- **Know whose it is.** Several people sign in, each to their own inventory: items, places and categories are private to whoever added them. Share an item with one or more people and it shows up for them too. Filter by *Mine*, by a name, or by *Not shared*. Every quantity change records who did it.
 
 On the go, **[Pocket Homelab](https://pockethomelab.com/)** is its companion app for iPhone, iPad, Mac and Android: the items with their − and +, the quick add and the shopping list in your pocket. See [Companion app](#companion-app-pocket-homelab).
 

@@ -17,7 +17,7 @@ import (
 )
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	st, err := s.store.GetSettings(r.Context())
+	st, err := s.store.GetSettings(r.Context(), actorID(r.Context()))
 	if err != nil {
 		s.fail(w, err, "settings")
 		return
@@ -25,8 +25,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// handlePutSettings saves the caller's own preferences; the app title is
+// box-wide and only an admin's change to it is kept.
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	cur, err := s.store.GetSettings(r.Context())
+	uid := actorID(r.Context())
+	cur, err := s.store.GetSettings(r.Context(), uid)
 	if err != nil {
 		s.fail(w, err, "settings")
 		return
@@ -51,14 +54,31 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		in.ExpiryWarnDays = 30
 	}
 	in.SetupComplete, in.DefaultsSeeded = cur.SetupComplete, cur.DefaultsSeeded
-	if err := s.store.SaveSettings(r.Context(), in); err != nil {
+	if !isAdmin(r.Context()) {
+		in.Title = cur.Title
+	} else if in.Title != cur.Title {
+		if err := s.store.SaveGlobalSettings(r.Context(), in); err != nil {
+			s.fail(w, err, "save settings")
+			return
+		}
+	}
+	if err := s.store.SaveUserSettings(r.Context(), uid, in); err != nil {
 		s.fail(w, err, "save settings")
 		return
 	}
 	writeJSON(w, http.StatusOK, in)
 }
 
+// handleSystemInfo: everyone sees the version and runtime; paths, box-wide
+// row counts and the Core link are for admins.
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	if !isAdmin(r.Context()) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"version": Version, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH,
+			"auth_mode": s.cfg.AuthMode, "uptime": time.Since(s.started).Round(time.Second).String(), "timezone": time.Now().Location().String(),
+		})
+		return
+	}
 	var size int64
 	if fi, err := os.Stat(s.cfg.DBPath); err == nil {
 		size = fi.Size()
@@ -91,7 +111,12 @@ func (s *Server) coreStatus() map[string]any {
 
 // ---------- backup / export / import ----------
 
+// handleBackup streams the whole database (every account), so it is admin-only;
+// everyone can export their own data with export.json / export.csv.
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	dir := filepath.Join(s.cfg.DataDir, "backups")
 	name := fmt.Sprintf("pocket-inventory-%s.db", time.Now().Format("20060102-150405"))
 	dst := filepath.Join(dir, name)
@@ -117,34 +142,39 @@ type Export struct {
 	Movements  []store.ActivityRow `json:"movements"`
 }
 
+// buildExport is the caller's own data: their settings, places, categories,
+// the items they own (with who each is shared with) and those items' history.
 func (s *Server) buildExport(ctx context.Context) (*Export, error) {
-	st, err := s.store.GetSettings(ctx)
+	uid := actorID(ctx)
+	st, err := s.store.GetSettings(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
-	locs, err := s.store.ListLocations(ctx)
+	locs, err := s.store.ListLocations(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
-	cats, err := s.store.ListCategories(ctx)
+	cats, err := s.store.ListCategories(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
-	users, err := s.store.ListUsers(ctx)
+	items, err := s.store.ListItems(ctx, uid, store.ItemFilter{Archived: true, OwnedOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.store.ListItems(ctx, store.ItemFilter{Archived: true})
-	if err != nil {
-		return nil, err
-	}
-	moves, err := s.store.RecentActivity(ctx, 100000)
+	moves, err := s.store.RecentActivity(ctx, uid, 100000, true)
 	if err != nil {
 		return nil, err
 	}
 	ex := &Export{Version: Version, ExportedAt: store.Now(), Settings: st, Locations: locs, Categories: cats, Items: items, Movements: moves, Users: []store.UserRef{}}
-	for _, u := range users {
-		ex.Users = append(ex.Users, store.UserRef{ID: u.ID, Name: u.Name})
+	seen := map[int64]bool{}
+	for _, it := range items {
+		for _, u := range it.Users {
+			if !seen[u.ID] {
+				seen[u.ID] = true
+				ex.Users = append(ex.Users, u)
+			}
+		}
 	}
 	return ex, nil
 }
@@ -161,9 +191,9 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 
 var csvHeader = []string{"name", "quantity", "unit", "min_quantity", "location", "category", "owners", "tags", "brand", "model", "serial", "barcode", "price", "purchase_date", "expiry_date", "url", "notes", "archived"}
 
-// handleExportCSV writes one row per item — the same columns import.csv accepts.
+// handleExportCSV writes one row per item the caller owns — the same columns import.csv accepts.
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListItems(r.Context(), store.ItemFilter{Archived: true})
+	items, err := s.store.ListItems(r.Context(), actorID(r.Context()), store.ItemFilter{Archived: true, OwnedOnly: true})
 	if err != nil {
 		s.fail(w, err, "export")
 		return
@@ -187,8 +217,9 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	cw.Flush()
 }
 
-// handleImportJSON merges an export file: places are matched by name (created
-// when missing), items are matched by name + location and updated or created.
+// handleImportJSON merges an export file into the caller's own data: places are
+// matched by name in their lists (created when missing), items are matched by
+// name + location among the items they own and updated or created.
 func (s *Server) handleImportJSON(w http.ResponseWriter, r *http.Request) {
 	var ex Export
 	if err := decode(r, &ex); err != nil {
@@ -322,7 +353,7 @@ func (s *Server) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 func (s *Server) importRows(r *http.Request, rows []importRow) (created, updated int, err error) {
 	ctx := r.Context()
 	actor := actorID(ctx)
-	existing, err := s.store.ListItems(ctx, store.ItemFilter{Archived: true})
+	existing, err := s.store.ListItems(ctx, actor, store.ItemFilter{Archived: true, OwnedOnly: true})
 	if err != nil {
 		return 0, 0, err
 	}
@@ -341,23 +372,23 @@ func (s *Server) importRows(r *http.Request, rows []importRow) (created, updated
 	}
 	for _, row := range rows {
 		it := row.item
-		it.ID, it.Photo = 0, ""
+		it.ID, it.Photo, it.OwnerID = 0, "", 0
 		it.LocationID, it.CategoryID = nil, nil
 		if row.location != "" {
-			l, err := s.store.FindLocationByName(ctx, row.location)
+			l, err := s.store.FindLocationByName(ctx, actor, row.location)
 			if err != nil {
 				l = &store.Location{Name: row.location}
-				if err := s.store.CreateLocation(ctx, l); err != nil {
+				if err := s.store.CreateLocation(ctx, actor, l); err != nil {
 					return created, updated, err
 				}
 			}
 			it.LocationID = &l.ID
 		}
 		if row.category != "" {
-			c, err := s.store.FindCategoryByName(ctx, row.category)
+			c, err := s.store.FindCategoryByName(ctx, actor, row.category)
 			if err != nil {
 				c = &store.Category{Name: row.category}
-				if err := s.store.CreateCategory(ctx, c); err != nil {
+				if err := s.store.CreateCategory(ctx, actor, c); err != nil {
 					return created, updated, err
 				}
 			}
@@ -370,7 +401,7 @@ func (s *Server) importRows(r *http.Request, rows []importRow) (created, updated
 			}
 		}
 		if cur, ok := byKey[key(it.Name, row.location)]; ok {
-			it.ID, it.Photo, it.CreatedAt = cur.ID, cur.Photo, cur.CreatedAt
+			it.ID, it.Photo, it.CreatedAt, it.OwnerID = cur.ID, cur.Photo, cur.CreatedAt, cur.OwnerID
 			if err := s.store.UpdateItem(ctx, &it, "import", actor); err != nil {
 				return created, updated, err
 			}

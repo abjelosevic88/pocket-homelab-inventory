@@ -76,29 +76,19 @@ func (s *Server) Bootstrap(ctx context.Context) error {
 		}
 		h, _ := bcrypt.GenerateFromPassword([]byte(s.cfg.AdminPassword), bcrypt.DefaultCost)
 		u := &store.User{Email: s.cfg.AdminEmail, Name: s.cfg.AdminName, PasswordHash: string(h), Role: "admin"}
-		if err := s.store.CreateUser(ctx, u); err != nil {
+		if err := s.newUser(ctx, u); err != nil {
 			return err
 		}
-		st, _ := s.store.GetSettings(ctx)
+		st, _ := s.store.GetSettings(ctx, 0)
 		st.SetupComplete = true
-		if err := s.store.SaveSettings(ctx, st); err != nil {
+		if err := s.store.SaveGlobalSettings(ctx, st); err != nil {
 			return err
 		}
 		s.log.Info("admin user created from environment", "email", u.Email)
 	}
-	st, err := s.store.GetSettings(ctx)
-	if err != nil {
-		return err
-	}
-	if !st.DefaultsSeeded {
-		for _, name := range []string{"Tools", "Electronics", "Household", "Food & drink", "Medicine", "Documents", "Clothing", "Outdoor"} {
-			_ = s.store.CreateCategory(ctx, &store.Category{Name: name})
-		}
-		st.DefaultsSeeded = true
-		if err := s.store.SaveSettings(ctx, st); err != nil {
-			return err
-		}
-	}
+	// Starter categories are per person: seeded for each account as it is
+	// created (newUser). Demo data belongs to the first account; without one
+	// yet it is seeded when that account appears.
 	if s.cfg.DemoData {
 		if err := s.seedDemo(ctx); err != nil {
 			return err
@@ -240,6 +230,9 @@ func (s *Server) fail(w http.ResponseWriter, err error, context string) {
 	case errors.Is(err, store.ErrConflict):
 		writeErr(w, http.StatusConflict, "a record with that name already exists")
 		return
+	case errors.Is(err, store.ErrForbidden):
+		writeErr(w, http.StatusForbidden, "only the person who added this item can do that")
+		return
 	}
 	s.log.Error(context, "err", err)
 	writeErr(w, http.StatusInternalServerError, context+": "+err.Error())
@@ -327,9 +320,14 @@ func (s *Server) registerWithCore(ctx context.Context) error {
 }
 
 // publish sends an event to Core without blocking the request.
-func (s *Server) publish(topic, subject string, payload map[string]any) {
+// The payload carries "user" (the email of the person who acted, Core's
+// convention) so subscribers can keep events per person.
+func (s *Server) publish(actor *store.User, topic, subject string, payload map[string]any) {
 	if !s.core.Configured() {
 		return
+	}
+	if actor != nil {
+		payload["user"] = actor.Email
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -377,21 +375,15 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	counts := s.store.Counts(ctx)
-	st, _ := s.store.GetSettings(ctx)
-	d, _ := s.store.DashboardStats(ctx, st.Currency, st.ExpiryWarnDays)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintf(w, "# HELP pocket_inventory_info Build info.\n# TYPE pocket_inventory_info gauge\npocket_inventory_info{version=%q} 1\n", Version)
 	fmt.Fprintf(w, "# HELP pocket_inventory_uptime_seconds Process uptime.\n# TYPE pocket_inventory_uptime_seconds gauge\npocket_inventory_uptime_seconds %d\n", int(time.Since(s.started).Seconds()))
 	fmt.Fprintf(w, "# HELP pocket_inventory_http_requests_total HTTP requests served.\n# TYPE pocket_inventory_http_requests_total counter\npocket_inventory_http_requests_total %d\n", s.requests.Load())
 	fmt.Fprintf(w, "# HELP pocket_inventory_http_errors_total HTTP 5xx responses.\n# TYPE pocket_inventory_http_errors_total counter\npocket_inventory_http_errors_total %d\n", s.errors.Load())
+	// Row counts only: content-derived numbers (low stock, total value, …) are
+	// per person and live behind GET /api/v1/dashboard with a token.
 	for k, v := range counts {
 		fmt.Fprintf(w, "# TYPE pocket_inventory_rows{table=%q} gauge\npocket_inventory_rows{table=%q} %d\n", k, k, v)
-	}
-	if d != nil {
-		fmt.Fprintf(w, "# HELP pocket_inventory_items Active items.\n# TYPE pocket_inventory_items gauge\npocket_inventory_items %d\n", d.Items)
-		fmt.Fprintf(w, "# HELP pocket_inventory_low_stock Items at or below their minimum.\n# TYPE pocket_inventory_low_stock gauge\npocket_inventory_low_stock %d\n", d.LowStock)
-		fmt.Fprintf(w, "# HELP pocket_inventory_expiring Items expiring within the warning window.\n# TYPE pocket_inventory_expiring gauge\npocket_inventory_expiring %d\n", d.Expiring)
-		fmt.Fprintf(w, "# HELP pocket_inventory_total_value Sum of quantity × price.\n# TYPE pocket_inventory_total_value gauge\npocket_inventory_total_value %.2f\n", d.TotalValue)
 	}
 }
 
