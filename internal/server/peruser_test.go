@@ -43,6 +43,11 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":1,"email":"boss@example.com","name":"Core admin","role":"admin"}}`)
 				return
 			}
+			if strings.HasPrefix(in.Token, "pcx_bo_") { // a linked app acting for Bo
+				scope := map[string]string{"pcx_bo_full": "items:read items:adjust", "pcx_bo_read": "items:read"}[in.Token]
+				fmt.Fprintf(w, `{"active":true,"kind":"delegated","scope":%q,"audience":"inventory","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"},"app":{"id":3,"slug":"garage","name":"Pocket Garage"}}`, scope)
+				return
+			}
 			if in.Token == "pcd_bo_phone" {
 				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"}}`)
 				return

@@ -57,6 +57,8 @@ On the go, **[Pocket Homelab](https://pockethomelab.com/)** is its companion app
 | **Places & categories** | Two flat lists, reorderable, with item counts. Deleting one detaches items rather than deleting them. New ones can be created inline from the item form. |
 | **History** | Every quantity change: delta, resulting quantity, note, who, when. Per item and as a global activity feed. |
 | **Automation** | REST API with personal tokens: `GET /api/v1/dashboard` for Homepage/Glance widgets, `GET /api/v1/lookup?barcode=` for scanner flows, `POST /api/v1/items/{id}/adjust` for Shortcuts / Home Assistant / n8n. Prometheus `/metrics`, `/healthz`, `/readyz`. With **Pocket Core** on the box: registers itself, publishes `inventory.item_created` / `inventory.adjusted` / `inventory.item_archived`, accepts paired-phone tokens, and offers **Sign in with Pocket Core** on the login page with no configuration (the app receives its OpenID Connect client when it registers). |
+
+**Offers app links** (Pocket Core 0.5+): another Pocket app the person allowed in Core can search their items (`items:read`) and change quantities (`items:adjust`: `POST /api/v1/items/{id}/adjust`, recorded as a movement with the app's note) with a five-minute `pcx_` token; every other route answers 403. Pocket Garage uses it for parts: picked parts come off the shelf when the work is logged.
 | **Ops-friendly** | Single static binary, embedded SPA, SQLite with WAL, `VACUUM INTO` backups from UI/CLI/API, JSON + CSV export, JSON + CSV import, proxy auth, non-root container, dark mode, installable PWA. |
 
 ## Quick start
