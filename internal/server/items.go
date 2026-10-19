@@ -212,6 +212,10 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "create item")
 		return
 	}
+	s.publish("inventory.item_created", fmt.Sprintf("item:%d", it.ID), map[string]any{
+		"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
+		"category_id": it.CategoryID, "location_id": it.LocationID, "tags": it.Tags,
+	})
 	writeJSON(w, http.StatusCreated, it)
 }
 
@@ -285,6 +289,10 @@ func (s *Server) handleAdjustItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "adjust quantity")
 		return
 	}
+	s.publish("inventory.adjusted", fmt.Sprintf("item:%d", it.ID), map[string]any{
+		"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
+		"delta": in.Delta, "set_to": in.Quantity, "note": strings.TrimSpace(in.Note), "low": it.MinQuantity > 0 && it.Quantity <= it.MinQuantity,
+	})
 	writeJSON(w, http.StatusOK, it)
 }
 
@@ -294,6 +302,11 @@ func (s *Server) handleArchiveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	it, _ := s.store.GetItem(r.Context(), idParam(r, "id"))
+	if it != nil {
+		s.publish("inventory.item_archived", fmt.Sprintf("item:%d", it.ID), map[string]any{
+			"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
+		})
+	}
 	writeJSON(w, http.StatusOK, it)
 }
 
