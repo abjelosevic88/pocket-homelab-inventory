@@ -227,13 +227,17 @@ func TestOIDCFromCore(t *testing.T) {
 	if status := authStatus(t, h.ts); status["oidc"] != true || status["oidc_name"] != "Pocket Core" {
 		t.Fatalf("status with the Core-issued client: %v", status)
 	}
+	// the box already has its owner, so the newcomer is not the first account
+	_ = h.st.CreateUser(context.Background(), &store.User{Email: "owner@example.com", Name: "Owner", Role: "admin"})
 	idp.email = "newcomer@example.com"
 	end, cl := h.signIn("/items")
 	if end == nil || end.Path != "/items" || h.me(cl) != 200 {
 		t.Fatalf("Core-vouched newcomer ended at %v, me=%d", end, h.me(cl))
 	}
-	if _, err := h.st.GetUserByEmail(context.Background(), "newcomer@example.com"); err != nil {
+	if u, err := h.st.GetUserByEmail(context.Background(), "newcomer@example.com"); err != nil {
 		t.Errorf("account not created for the Core-vouched person: %v", err)
+	} else if u.Role != "member" {
+		t.Errorf("Core-vouched newcomer must be a member, got %q", u.Role)
 	}
 
 	// explicit OIDC_* variables take precedence over the Core-issued client

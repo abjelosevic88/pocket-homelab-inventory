@@ -39,6 +39,10 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 		case "/api/v1/auth/introspect":
 			var in struct{ Token string }
 			_ = json.NewDecoder(r.Body).Decode(&in)
+			if in.Token == "pcd_core_admin" {
+				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":1,"email":"boss@example.com","name":"Core admin","role":"admin"}}`)
+				return
+			}
 			if in.Token == "pcd_bo_phone" {
 				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"}}`)
 				return
@@ -340,5 +344,22 @@ func TestPerUserSharing(t *testing.T) {
 	h.json(h.anaTok, "GET", fmt.Sprintf("/api/v1/items/%d", tent.ID), nil, &anaTent)
 	if anaTent.Item.Quantity == 9 {
 		t.Errorf("Bo's import overwrote Ana's item")
+	}
+}
+
+// TestAutoCreatedAccountsAreMembers: an account created on first contact
+// (here a Core device token whose person is an admin in Core) is a member;
+// only the box's first account is ever an admin.
+func TestAutoCreatedAccountsAreMembers(t *testing.T) {
+	h := newPerUserHarness(t)
+	if code, body := h.do("pcd_core_admin", "GET", "/api/v1/auth/me", nil); code != 200 || !strings.Contains(body, `"role":"member"`) {
+		t.Fatalf("auto-created account: %d %s", code, body)
+	}
+	u, err := h.st.GetUserByEmail(context.Background(), "boss@example.com")
+	if err != nil || u.Role != "member" {
+		t.Fatalf("stored role: %+v %v", u, err)
+	}
+	if code, _ := h.do("pcd_core_admin", "POST", "/api/v1/users", map[string]any{"email": "x@example.com", "password": "12345678", "role": "admin"}); code != 403 {
+		t.Errorf("auto-created member could create an admin: %d", code)
 	}
 }
