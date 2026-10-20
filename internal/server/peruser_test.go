@@ -40,7 +40,7 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 			var in struct{ Token string }
 			_ = json.NewDecoder(r.Body).Decode(&in)
 			if in.Token == "pcd_core_admin" {
-				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":1,"email":"boss@example.com","name":"Core admin","role":"admin"}}`)
+				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":1,"sub":"boss@example.com","email":"boss@example.com","name":"Core admin","role":"admin"}}`)
 				return
 			}
 			if strings.HasPrefix(in.Token, "pcx_bo_") { // a linked app acting for Bo
@@ -53,15 +53,15 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 				case "pcx_bo_day":
 					slug, name = "day", "Pocket Day"
 				}
-				fmt.Fprintf(w, `{"active":true,"kind":"delegated","scope":%q,"audience":"inventory","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"},"app":{"id":3,"slug":%q,"name":%q}}`, scope, slug, name)
+				fmt.Fprintf(w, `{"active":true,"kind":"delegated","scope":%q,"audience":"inventory","user":{"id":7,"sub":"bo@example.com","email":"bo@example.com","name":"Bo","role":"member"},"app":{"id":3,"slug":%q,"name":%q}}`, scope, slug, name)
 				return
 			}
 			if in.Token == "pcx_ana_all" { // a linked app acting for Ana, the admin, with every scope
-				fmt.Fprint(w, `{"active":true,"kind":"delegated","scope":"items:read items:write items:adjust activity:read","audience":"inventory","user":{"id":1,"email":"ana@example.com","name":"Ana","role":"admin"},"app":{"id":4,"slug":"kitchen","name":"Pocket Kitchen"}}`)
+				fmt.Fprint(w, `{"active":true,"kind":"delegated","scope":"items:read items:write items:adjust activity:read","audience":"inventory","user":{"id":1,"sub":"ana@example.com","email":"ana@example.com","name":"Ana","role":"admin"},"app":{"id":4,"slug":"kitchen","name":"Pocket Kitchen"}}`)
 				return
 			}
 			if in.Token == "pcd_bo_phone" {
-				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"}}`)
+				fmt.Fprint(w, `{"active":true,"kind":"device","user":{"id":7,"sub":"bo@example.com","email":"bo@example.com","name":"Bo","role":"member"}}`)
 				return
 			}
 			fmt.Fprint(w, `{"active":false}`)
@@ -81,6 +81,9 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 	}
 	t.Cleanup(func() { st.Close() })
 	s := New(cfg, st, log, nil)
+	if err := s.core.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	h := &perUserHarness{t: t, st: st, boDevice: "pcd_bo_phone"}
 	h.ana = &store.User{Email: "ana@example.com", Name: "Ana", Role: "admin"}

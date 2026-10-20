@@ -80,7 +80,7 @@ func (s *Server) linkUser(ctx context.Context, tok string, r *http.Request) (*st
 	if app == "" {
 		app = in.App.Slug
 	}
-	u, err := s.firstOrSystemUser(ctx, strings.ToLower(in.User.Email), in.User.Name)
+	u, err := s.coreIdentityUser(ctx, in)
 	return u, app, err
 }
 
