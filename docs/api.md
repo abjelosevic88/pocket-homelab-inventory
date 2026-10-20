@@ -19,7 +19,7 @@ For a ready-made client, [Pocket Homelab](https://pockethomelab.com/) (iPhone, i
 | `GET` | `/items` | List. Filters: `q=` (search), `location=<id>\|none`, `category=<id>\|none`, `user=<id>\|me\|none`, `tag=`, `barcode=`, `low=1`, `expiring=<days>`, `archived=1` (include archived), `sort=name\|updated\|created\|quantity\|location\|expiry`, `limit=`. |
 | `POST` | `/items` | Create (body below). Returns the item. |
 | `GET` | `/items/{id}` | `{"item": …, "movements": [last 30]}` |
-| `PUT` | `/items/{id}` | Update every field (same body as create). Add `"note"` to describe a quantity change. |
+| `PUT` | `/items/{id}` | Update (same body as create). Fields you leave out keep their current values, so `{"tags": "pantry"}` alone is fine; `"location"` / `"category"` by name without an id move the item there. Add `"note"` to describe a quantity change. |
 | `DELETE` | `/items/{id}` | Delete item, photo and history. Prefer archive. |
 | `POST` | `/items/{id}/adjust` | `{"delta": -2, "note": "used"}` **or** `{"quantity": 10, "note": "stock-take"}`. Never goes below zero. Returns the item. |
 | `POST` | `/items/{id}/archive` · `/unarchive` | Hide / restore. |
@@ -85,6 +85,20 @@ Every key except `name` is optional. The response adds `id`, `location_name`, `c
 | `POST` | `/import.csv` | CSV body or `multipart/form-data` field `file`. Needs a `name` column; others optional (see export). `owners` is `;`-separated user names. |
 
 Unauthenticated: `/healthz`, `/readyz`, `/metrics` (Prometheus row counts and HTTP stats only; disable with `METRICS_ENABLED=false` or block at the proxy).
+
+## Pocket Core app links
+
+Another Pocket app the person allowed in Pocket Core calls this API for them with a five-minute `pcx_` token (see `docs/links.md` in pocket-homelab-core). The token acts as that person (exactly what they see with their own login) and opens only these routes; everything else answers `403`:
+
+| Scope | Routes |
+|---|---|
+| any linked app | `GET /auth/me` |
+| `items:read` | `GET /items`, `GET /items/{id}`, `GET /lookup`, `GET /locations` |
+| `items:adjust` | `POST /items/{id}/adjust` |
+| `items:write` | `POST /items`, `PUT /items/{id}`, `POST /items/{id}/archive` |
+| `activity:read` | `GET /activity` |
+
+A linked app never changes who an item is shared with (`user_ids` is ignored), cannot delete, unarchive or touch photos, and a quantity change it makes without a `note` is recorded with the app's name.
 
 ## Homepage widget
 

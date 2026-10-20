@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -211,6 +212,9 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
+	if linkApp(r.Context()) != "" {
+		in.UserIDs = nil // sharing stays with the person, never a linked app
+	}
 	st, _ := s.store.GetSettings(r.Context(), actorID(r.Context()))
 	it := &store.Item{Quantity: 1, Unit: st.DefaultUnit}
 	if err := s.apply(r, it, in); err != nil {
@@ -228,30 +232,68 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, it)
 }
 
+// handleUpdateItem saves an item. Fields missing from the body keep their
+// current values, so a client may send only what changed ({"tags": "…"}); the
+// web app always sends the whole form. A location/category given by name
+// without an id moves the item there (created for the owner when missing).
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	it, err := s.store.GetItem(r.Context(), actorID(r.Context()), idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "get item")
 		return
 	}
-	var in itemInput
-	if err := decode(r, &in); err != nil {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+	var sent map[string]json.RawMessage
+	in := inputFrom(it)
+	if json.Unmarshal(raw, &sent) != nil || json.Unmarshal(raw, &in) != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if _, ok := sent["location_id"]; !ok && strings.TrimSpace(in.Location) != "" {
+		in.LocationID = nil
+	}
+	if _, ok := sent["category_id"]; !ok && strings.TrimSpace(in.Category) != "" {
+		in.CategoryID = nil
+	}
+	app := linkApp(r.Context())
+	if app != "" {
+		// Who an item is shared with stays with the person, never a linked app.
+		ids := append([]int64{}, it.UserIDs...)
+		in.UserIDs = &ids
 	}
 	if msg := in.validate(); msg != "" {
 		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
+	note := strings.TrimSpace(in.Note)
+	if note == "" && app != "" {
+		note = app
+	}
 	if err := s.apply(r, it, in); err != nil {
 		s.fail(w, err, "resolve places")
 		return
 	}
-	if err := s.store.UpdateItem(r.Context(), it, strings.TrimSpace(in.Note), actorID(r.Context())); err != nil {
+	if err := s.store.UpdateItem(r.Context(), it, note, actorID(r.Context())); err != nil {
 		s.fail(w, err, "update item")
 		return
 	}
 	writeJSON(w, http.StatusOK, it)
+}
+
+// inputFrom is an item as the body of a full update.
+func inputFrom(it *store.Item) itemInput {
+	q, mq, p := it.Quantity, it.MinQuantity, it.Price
+	ids := append([]int64{}, it.UserIDs...)
+	return itemInput{
+		Name: it.Name, Notes: it.Notes, CategoryID: it.CategoryID, LocationID: it.LocationID,
+		Quantity: &q, Unit: it.Unit, MinQuantity: &mq, Barcode: it.Barcode, Brand: it.Brand,
+		Model: it.Model, Serial: it.Serial, PurchaseDate: it.PurchaseDate, Price: &p,
+		ExpiryDate: it.ExpiryDate, Tags: it.Tags, URL: it.URL, UserIDs: &ids,
+	}
 }
 
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +327,9 @@ func (s *Server) handleAdjustItem(w http.ResponseWriter, r *http.Request) {
 	var it *store.Item
 	var err error
 	actor := actorID(r.Context())
+	if in.Note = strings.TrimSpace(in.Note); in.Note == "" {
+		in.Note = linkApp(r.Context()) // a linked app's change names the app
+	}
 	switch {
 	case in.Quantity != nil:
 		it, err = s.store.SetQuantity(r.Context(), idParam(r, "id"), *in.Quantity, strings.TrimSpace(in.Note), actor)

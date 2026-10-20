@@ -44,8 +44,20 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 				return
 			}
 			if strings.HasPrefix(in.Token, "pcx_bo_") { // a linked app acting for Bo
-				scope := map[string]string{"pcx_bo_full": "items:read items:adjust", "pcx_bo_read": "items:read"}[in.Token]
-				fmt.Fprintf(w, `{"active":true,"kind":"delegated","scope":%q,"audience":"inventory","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"},"app":{"id":3,"slug":"garage","name":"Pocket Garage"}}`, scope)
+				scope := map[string]string{"pcx_bo_full": "items:read items:adjust", "pcx_bo_read": "items:read",
+					"pcx_bo_kitchen": "items:read items:write items:adjust", "pcx_bo_write": "items:write", "pcx_bo_day": "activity:read"}[in.Token]
+				slug, name := "garage", "Pocket Garage"
+				switch in.Token {
+				case "pcx_bo_kitchen", "pcx_bo_write":
+					slug, name = "kitchen", "Pocket Kitchen"
+				case "pcx_bo_day":
+					slug, name = "day", "Pocket Day"
+				}
+				fmt.Fprintf(w, `{"active":true,"kind":"delegated","scope":%q,"audience":"inventory","user":{"id":7,"email":"bo@example.com","name":"Bo","role":"member"},"app":{"id":3,"slug":%q,"name":%q}}`, scope, slug, name)
+				return
+			}
+			if in.Token == "pcx_ana_all" { // a linked app acting for Ana, the admin, with every scope
+				fmt.Fprint(w, `{"active":true,"kind":"delegated","scope":"items:read items:write items:adjust activity:read","audience":"inventory","user":{"id":1,"email":"ana@example.com","name":"Ana","role":"admin"},"app":{"id":4,"slug":"kitchen","name":"Pocket Kitchen"}}`)
 				return
 			}
 			if in.Token == "pcd_bo_phone" {
