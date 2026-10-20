@@ -1,8 +1,10 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	core "github.com/abjelosevic88/pocket-homelab-core/sdk"
 	"io"
 	"mime"
 	"net/http"
@@ -215,20 +217,34 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	if linkApp(r.Context()) != "" {
 		in.UserIDs = nil // sharing stays with the person, never a linked app
 	}
+	op, err := core.NewOperation(fmt.Sprintf("%d:%s:items:create", actorID(r.Context()), linkApp(r.Context())), r.Header.Get("Idempotency-Key"), in)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var previous store.Item
+	if ok, err := op.Replay(r.Context(), s.store.DB, &previous); err != nil {
+		s.fail(w, err, "read operation")
+		return
+	} else if ok {
+		if _, err := s.store.GetItem(r.Context(), actorID(r.Context()), previous.ID); err != nil {
+			s.fail(w, err, "item")
+			return
+		}
+		writeJSON(w, http.StatusCreated, previous)
+		return
+	}
+
 	st, _ := s.store.GetSettings(r.Context(), actorID(r.Context()))
 	it := &store.Item{Quantity: 1, Unit: st.DefaultUnit}
 	if err := s.apply(r, it, in); err != nil {
 		s.fail(w, err, "resolve places")
 		return
 	}
-	if err := s.store.CreateItem(r.Context(), it, actorID(r.Context())); err != nil {
+	if err := s.store.CreateItemOperation(r.Context(), it, actorID(r.Context()), op, s.itemEvent(r.Context(), userFrom(r.Context()), "inventory.item_created", it, nil)); err != nil {
 		s.fail(w, err, "create item")
 		return
 	}
-	s.publish(userFrom(r.Context()), "inventory.item_created", fmt.Sprintf("item:%d", it.ID), map[string]any{
-		"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
-		"category_id": it.CategoryID, "location_id": it.LocationID, "tags": it.Tags,
-	})
 	writeJSON(w, http.StatusCreated, it)
 }
 
@@ -324,44 +340,45 @@ func (s *Server) handleAdjustItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	var it *store.Item
-	var err error
 	actor := actorID(r.Context())
 	if in.Note = strings.TrimSpace(in.Note); in.Note == "" {
-		in.Note = linkApp(r.Context()) // a linked app's change names the app
+		in.Note = linkApp(r.Context())
 	}
-	switch {
-	case in.Quantity != nil:
-		it, err = s.store.SetQuantity(r.Context(), idParam(r, "id"), *in.Quantity, strings.TrimSpace(in.Note), actor)
-	case in.Delta != nil:
-		it, err = s.store.AdjustQuantity(r.Context(), idParam(r, "id"), *in.Delta, strings.TrimSpace(in.Note), actor)
-	default:
+	if in.Quantity == nil && in.Delta == nil {
 		writeErr(w, http.StatusBadRequest, "delta or quantity is required")
 		return
 	}
+	op, err := core.NewOperation(fmt.Sprintf("%d:%s:items:%d:adjust", actor, linkApp(r.Context()), idParam(r, "id")), r.Header.Get("Idempotency-Key"), in)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	it, err := s.store.AdjustQuantityOperation(r.Context(), idParam(r, "id"), in.Delta, in.Quantity, in.Note, actor, op, func(tx *sql.Tx, it *store.Item) error {
+		hook := s.itemEvent(r.Context(), userFrom(r.Context()), "inventory.adjusted", it, map[string]any{"delta": in.Delta, "set_to": in.Quantity, "note": in.Note, "low": it.MinQuantity > 0 && it.Quantity <= it.MinQuantity})
+		if hook != nil {
+			return hook(tx)
+		}
+		return nil
+	})
 	if err != nil {
 		s.fail(w, err, "adjust quantity")
 		return
 	}
-	s.publish(userFrom(r.Context()), "inventory.adjusted", fmt.Sprintf("item:%d", it.ID), map[string]any{
-		"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
-		"delta": in.Delta, "set_to": in.Quantity, "note": strings.TrimSpace(in.Note), "low": it.MinQuantity > 0 && it.Quantity <= it.MinQuantity,
-	})
 	writeJSON(w, http.StatusOK, it)
 }
 
 func (s *Server) handleArchiveItem(w http.ResponseWriter, r *http.Request) {
 	uid := actorID(r.Context())
-	if err := s.store.SetArchived(r.Context(), uid, idParam(r, "id"), true); err != nil {
+	it, err := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
+	if err != nil {
 		s.fail(w, err, "archive item")
 		return
 	}
-	it, _ := s.store.GetItem(r.Context(), uid, idParam(r, "id"))
-	if it != nil {
-		s.publish(userFrom(r.Context()), "inventory.item_archived", fmt.Sprintf("item:%d", it.ID), map[string]any{
-			"item_id": it.ID, "item": it.Name, "quantity": it.Quantity, "unit": it.Unit,
-		})
+	if err = s.store.SetArchived(r.Context(), uid, it.ID, true, s.itemEvent(r.Context(), userFrom(r.Context()), "inventory.item_archived", it, nil)); err != nil {
+		s.fail(w, err, "archive item")
+		return
 	}
+	it, _ = s.store.GetItem(r.Context(), uid, it.ID)
 	writeJSON(w, http.StatusOK, it)
 }
 

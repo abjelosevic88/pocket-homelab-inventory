@@ -230,7 +230,7 @@ func (s *Server) fail(w http.ResponseWriter, err error, context string) {
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not found")
 		return
-	case errors.Is(err, store.ErrConflict):
+	case errors.Is(err, store.ErrConflict), errors.Is(err, core.ErrOperationConflict):
 		writeErr(w, http.StatusConflict, "a record with that name already exists")
 		return
 	case errors.Is(err, store.ErrForbidden):
@@ -321,23 +321,6 @@ func (s *Server) registerWithCore(ctx context.Context) error {
 		s.log.Debug("pocket core: re-registered", "core", s.cfg.CoreURL)
 	}
 	return nil
-}
-
-// publish persists an event locally; the SDK retries network delivery.
-// The payload carries "user" (the email of the person who acted, Core's
-// convention) so subscribers can keep events per person.
-func (s *Server) publish(actor *store.User, topic, subject string, payload map[string]any) {
-	if !s.core.Configured() {
-		return
-	}
-	if actor != nil {
-		payload["user"] = actor.Email
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := s.core.Publish(ctx, topic, subject, payload); err != nil {
-		s.log.Warn("pocket core: outbox enqueue failed", "topic", topic, "err", err)
-	}
 }
 
 // resolveSibling asks Core where a sibling app lives (cached a minute) so the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	core "github.com/abjelosevic88/pocket-homelab-core/sdk"
 	"sort"
 	"strings"
 	"time"
@@ -61,6 +62,11 @@ func scanItem(row interface{ Scan(...any) error }) (*Item, error) {
 
 // attachUsers fills UserIDs / Users for the given items in one query.
 func (s *Store) attachUsers(ctx context.Context, items []*Item) error {
+	return attachItemUsers(ctx, s.DB, items)
+}
+func attachItemUsers(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, items []*Item) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -70,7 +76,7 @@ func (s *Store) attachUsers(ctx context.Context, items []*Item) error {
 		byID[it.ID] = it
 		ids = append(ids, fmt.Sprintf("%d", it.ID))
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT iu.item_id, u.id, u.name, u.email FROM item_users iu JOIN users u ON u.id = iu.user_id
+	rows, err := db.QueryContext(ctx, `SELECT iu.item_id, u.id, u.name, u.email FROM item_users iu JOIN users u ON u.id = iu.user_id
 		WHERE iu.item_id IN (`+strings.Join(ids, ",")+`) ORDER BY u.name COLLATE NOCASE, u.id`)
 	if err != nil {
 		return err
@@ -237,13 +243,30 @@ const ownLocation = `(SELECT id FROM locations WHERE id = ? AND user_id = ?)`
 const ownCategory = `(SELECT id FROM categories WHERE id = ? AND user_id = ?)`
 
 // CreateItem inserts an item owned by actor and records the opening quantity as a movement.
-func (s *Store) CreateItem(ctx context.Context, it *Item, actor int64) error {
+func (s *Store) CreateItem(ctx context.Context, it *Item, actor int64, after ...core.CommitHook) error {
+	return s.CreateItemOperation(ctx, it, actor, nil, after...)
+}
+func (s *Store) CreateItemOperation(ctx context.Context, it *Item, actor int64, op *core.Operation, after ...core.CommitHook) error {
+	it.Name = strings.TrimSpace(it.Name)
+	it.OwnerID = actor
 	it.Tags = NormalizeTags(it.Tags)
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
+	var previous Item
+	if ok, err := op.Replay(ctx, tx, &previous); err != nil {
+		return err
+	} else if ok {
+		var id int64
+		if err := tx.QueryRowContext(ctx, `SELECT i.id`+itemFrom+` WHERE i.id=? AND `+visibleTo, previous.ID, actor, actor).Scan(&id); err != nil {
+			return notFound(err)
+		}
+		*it = previous
+		return nil
+	}
+
 	res, err := tx.ExecContext(ctx, `INSERT INTO items (user_id, name, notes, category_id, location_id, quantity, unit, min_quantity, barcode, brand, model, serial,
 		purchase_date, price, expiry_date, tags, url, photo, archived) VALUES (?, ?, ?, `+ownCategory+`, `+ownLocation+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullID(actor), strings.TrimSpace(it.Name), it.Notes, it.CategoryID, actor, it.LocationID, actor, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
@@ -260,12 +283,20 @@ func (s *Store) CreateItem(ctx context.Context, it *Item, actor int64) error {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	fresh, err := scanItem(tx.QueryRowContext(ctx, `SELECT `+itemCols+itemFrom+` WHERE i.id=?`, it.ID))
+	if err != nil {
 		return err
 	}
-	fresh, err := s.GetItem(ctx, actor, it.ID)
-	if err == nil {
-		*it = *fresh
+	if err := attachItemUsers(ctx, tx, []*Item{fresh}); err != nil {
+		return err
+	}
+	*it = *fresh
+	if err := op.Save(ctx, tx, it); err != nil {
+		return err
+	}
+
+	if err := core.Commit(tx, after...); err != nil {
+		return err
 	}
 	return nil
 }
@@ -333,50 +364,83 @@ func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int
 // AdjustQuantity adds delta (negative to take) to an item actor can see and
 // logs the movement. Quantity never goes below zero.
 func (s *Store) AdjustQuantity(ctx context.Context, id int64, delta float64, note string, actor int64) (*Item, error) {
+	return s.AdjustQuantityOperation(ctx, id, &delta, nil, note, actor, nil, nil)
+}
+
+// SetQuantity computes its delta under the same write transaction, so a
+// concurrent adjustment cannot turn an absolute quantity into an addition.
+func (s *Store) SetQuantity(ctx context.Context, id int64, qty float64, note string, actor int64) (*Item, error) {
+	return s.AdjustQuantityOperation(ctx, id, nil, &qty, note, actor, nil, nil)
+}
+
+func (s *Store) AdjustQuantityOperation(ctx context.Context, id int64, delta, quantity *float64, note string, actor int64, op *core.Operation, after func(*sql.Tx, *Item) error) (*Item, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback() //nolint:errcheck
-	var before float64
-	if err := tx.QueryRowContext(ctx, `SELECT i.quantity FROM items i WHERE i.id = ? AND `+visibleTo, id, actor, actor).Scan(&before); err != nil {
-		return nil, notFound(err)
-	}
-	after := before + delta
-	if after < 0 {
-		after = 0
-		delta = -before
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE items SET quantity = ?, updated_at = ? WHERE id = ?`, after, Now(), id); err != nil {
+	defer tx.Rollback()
+	// Check access even on replay: a saved receipt is not an access grant.
+	it, err := scanItem(tx.QueryRowContext(ctx, `SELECT `+itemCols+itemFrom+` WHERE i.id=? AND `+visibleTo, id, actor, actor))
+	if err != nil {
 		return nil, err
 	}
-	if delta != 0 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO movements (item_id, user_id, delta, quantity_after, note) VALUES (?, ?, ?, ?, ?)`, id, nullID(actor), delta, after, note); err != nil {
+	var replay Item
+	if ok, err := op.Replay(ctx, tx, &replay); err != nil {
+		return nil, err
+	} else if ok {
+		return &replay, nil
+	}
+	before := it.Quantity
+	if quantity != nil {
+		it.Quantity = *quantity
+	} else if delta != nil {
+		it.Quantity += *delta
+	} else {
+		return nil, fmt.Errorf("quantity or delta required")
+	}
+	if it.Quantity < 0 {
+		it.Quantity = 0
+	}
+	change := it.Quantity - before
+	it.Low = it.MinQuantity > 0 && it.Quantity <= it.MinQuantity
+	it.UpdatedAt = Now()
+	if _, err = tx.ExecContext(ctx, `UPDATE items SET quantity=?,updated_at=? WHERE id=?`, it.Quantity, it.UpdatedAt, id); err != nil {
+		return nil, err
+	}
+	if change != 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO movements(item_id,user_id,delta,quantity_after,note) VALUES(?,?,?,?,?)`, id, nullID(actor), change, it.Quantity, note); err != nil {
 			return nil, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err = attachItemUsers(ctx, tx, []*Item{it}); err != nil {
 		return nil, err
 	}
-	return s.GetItem(ctx, actor, id)
-}
-
-// SetQuantity sets an absolute quantity and logs the difference.
-func (s *Store) SetQuantity(ctx context.Context, id int64, qty float64, note string, actor int64) (*Item, error) {
-	var before float64
-	if err := s.DB.QueryRowContext(ctx, `SELECT i.quantity FROM items i WHERE i.id = ? AND `+visibleTo, id, actor, actor).Scan(&before); err != nil {
-		return nil, notFound(err)
+	if err = op.Save(ctx, tx, it); err != nil {
+		return nil, err
 	}
-	if qty < 0 {
-		qty = 0
+	if after != nil {
+		if err = after(tx, it); err != nil {
+			return nil, err
+		}
 	}
-	return s.AdjustQuantity(ctx, id, qty-before, note, actor)
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return it, nil
 }
 
 // SetArchived hides or restores an item uid can see.
-func (s *Store) SetArchived(ctx context.Context, uid, id int64, archived bool) error {
-	res, err := s.DB.ExecContext(ctx, `UPDATE items AS i SET archived = ?, updated_at = ? WHERE i.id = ? AND `+visibleTo, boolInt(archived), Now(), id, uid, uid)
-	return affected(res, err)
+func (s *Store) SetArchived(ctx context.Context, uid, id int64, archived bool, after ...core.CommitHook) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE items AS i SET archived=?,updated_at=? WHERE i.id=? AND `+visibleTo, boolInt(archived), Now(), id, uid, uid)
+	if err = affected(res, err); err != nil {
+		return err
+	}
+	return core.Commit(tx, after...)
 }
 
 // SetPhoto stores the photo file name ("" clears it) on an item uid can see.
