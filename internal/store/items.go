@@ -267,14 +267,16 @@ func (s *Store) CreateItemOperation(ctx context.Context, it *Item, actor int64, 
 		return nil
 	}
 
-	res, err := tx.ExecContext(ctx, `INSERT INTO items (user_id, name, notes, category_id, location_id, quantity, unit, min_quantity, barcode, brand, model, serial,
-		purchase_date, price, expiry_date, tags, url, photo, archived) VALUES (?, ?, ?, `+ownCategory+`, `+ownLocation+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		nullID(actor), strings.TrimSpace(it.Name), it.Notes, it.CategoryID, actor, it.LocationID, actor, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
+	if err := tx.QueryRowContext(ctx, `UPDATE item_sequence SET value=MAX(value,(SELECT COALESCE(MAX(id),0) FROM items))+1 WHERE singleton=1 RETURNING value`).Scan(&it.ID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO items (id, user_id, name, notes, category_id, location_id, quantity, unit, min_quantity, barcode, brand, model, serial,
+		purchase_date, price, expiry_date, tags, url, photo, archived) VALUES (?, ?, ?, ?, `+ownCategory+`, `+ownLocation+`, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		it.ID, nullID(actor), strings.TrimSpace(it.Name), it.Notes, it.CategoryID, actor, it.LocationID, actor, it.Quantity, it.Unit, it.MinQuantity, strings.TrimSpace(it.Barcode),
 		it.Brand, it.Model, it.Serial, it.PurchaseDate, it.Price, it.ExpiryDate, it.Tags, it.URL, it.Photo, boolInt(it.Archived))
 	if err != nil {
 		return err
 	}
-	it.ID, _ = res.LastInsertId()
 	if err := setItemUsers(ctx, tx, it.ID, it.UserIDs); err != nil {
 		return err
 	}

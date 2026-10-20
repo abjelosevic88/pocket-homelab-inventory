@@ -143,4 +143,18 @@ func TestCreateItemOperationReplaysOneCreation(t *testing.T) {
 	if count != 1 {
 		t.Fatal("duplicate initial movement", count)
 	}
+
+	if code, _ := h.do(h.boTok, "DELETE", fmt.Sprintf("/api/v1/items/%d", id), nil); code != 204 {
+		t.Fatal(code)
+	}
+	var next store.Item
+	if h.json(h.boTok, "POST", "/api/v1/items", map[string]any{"name": "Replacement", "quantity": 1}, &next) != 201 {
+		t.Fatal("replacement")
+	}
+	if next.ID <= id {
+		t.Fatal("deleted item ID reused", next.ID, id)
+	}
+	if code, _ := call(`{"name":"Stock","quantity":20}`); code != 404 {
+		t.Fatal("receipt resolved to replacement item", code)
+	}
 }
