@@ -43,7 +43,7 @@ On the go, **[Pocket Homelab](https://pockethomelab.com/)** is its companion app
 
 <p align="center">
   <img src="docs/screenshots/items-mobile.png" width="260" alt="Items page on a phone, dark mode"><br>
-  <sub>Installable PWA with a bottom tab bar and dark mode.</sub>
+  <sub>Installable PWA: a slide-out sidebar, a + button for new items, and dark mode.</sub>
 </p>
 
 ## Features
@@ -69,7 +69,7 @@ curl -O https://raw.githubusercontent.com/abjelosevic88/pocket-homelab-inventory
 docker compose up -d
 ```
 
-Open `http://<host>:8080`, create your account, add the rest of the household under **Settings → Users**, and start typing into the quick-add box.
+Open `http://<host>:8080`, create your account, add the rest of the household under **Settings → People**, and start typing into the quick-add box.
 
 <details>
 <summary><b>docker run one-liner</b></summary>

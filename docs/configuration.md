@@ -26,7 +26,7 @@ All settings are environment variables. Nothing is required.
 
 | Variable | Default | Description |
 |---|---|---|
-| `AUTH_MODE` | `local` | `local`: built-in email + password, first-run setup screen, multiple users managed under Settings → Users. `proxy`: trust the user name from a header set by your SSO proxy; users are auto-created on first visit (first one becomes admin). `none`: no login at all, one implicit user — only for trusted networks. |
+| `AUTH_MODE` | `local` | `local`: built-in email + password, first-run setup screen, multiple users managed under Settings → People. `proxy`: trust the user name from a header set by your SSO proxy; users are auto-created on first visit (first one becomes admin). `none`: no login at all, one implicit user — only for trusted networks. |
 | `AUTH_PROXY_HEADER` | `Remote-User` | Header carrying the user name in `proxy` mode. |
 | `AUTH_PROXY_EMAIL_HEADER` | `Remote-Email` | Header carrying the email in `proxy` mode. |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` | – | In `local` mode, create this admin on first start instead of showing the setup screen. Password must be 8+ characters. |
