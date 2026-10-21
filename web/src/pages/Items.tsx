@@ -5,6 +5,8 @@ import { useApp } from '../lib/app-context'
 import type { Dashboard, Item, Movement } from '../lib/types'
 import { ago, daysUntil, money, qty, splitTags, todayISO } from '../lib/format'
 import { Confirm, Empty, Field, Loading, Modal, PageHeader, useAsync, useDebounce, useToast } from '../components/ui'
+import { Icon } from '../components/icons'
+import { announceChange, useOnChange } from '../components/events'
 import { Avatars, PeoplePicker } from '../components/people'
 import { Select } from '../components/Select'
 import type { Category, Location } from '../lib/types'
@@ -51,13 +53,17 @@ export default function Items() {
   }, [routeID]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const closeEdit = () => { setEdit(null); if (routeID) navigate('/items' + (params.toString() ? `?${params}` : ''), { replace: true }) }
-  const refreshAll = async () => { await Promise.all([items.reload(), reloadMeta()]) }
+  // Anything added or changed (here or from the shell's New menu) reloads the list;
+  // the figures and tags follow the list.
+  useOnChange(() => { items.reload() })
+  const refreshAll = async () => { await reloadMeta(); announceChange() }
 
   const adjust = async (it: Item, delta: number) => {
     try {
       const upd = await api.post<Item>(`${V1}/items/${it.id}/adjust`, { delta, note: delta > 0 ? 'added' : 'used' })
       items.setData(d => d ? d.map(x => x.id === upd.id ? upd : x) : d)
       if (upd.low && !it.low) toast(`${upd.name} is running low`)
+      if (upd.low !== it.low) announceChange()
     } catch (e) { toast((e as Error).message, 'err') }
   }
 
@@ -91,54 +97,55 @@ export default function Items() {
   return (
     <>
       <PageHeader title="Items" sub={d ? `${d.items} items · ${qty(d.quantity_total)} things · ${money(d.total_value, currency)}` : undefined}
-        actions={<button className="btn primary" onClick={() => setEdit({})}>+ New item</button>} />
+        actions={<button type="button" className="btn primary hide-mobile" onClick={() => setEdit({})}><Icon name="plus" size={16} />New item</button>} />
 
       {d && (
         <div className="stats">
-          <button className={`stat ${!view ? 'active' : ''}`} onClick={() => set('view', '')}><div className="n">{d.items}</div><div className="l">Items</div></button>
-          <button className={`stat danger ${view === 'low' ? 'active' : ''}`} onClick={() => set('view', view === 'low' ? '' : 'low')}><div className="n">{d.low_stock}</div><div className="l">Running low</div></button>
-          <button className={`stat warn ${view === 'expiring' ? 'active' : ''}`} onClick={() => set('view', view === 'expiring' ? '' : 'expiring')}><div className="n">{d.expiring + d.expired}</div><div className="l">Expiring soon</div></button>
-          <button className="stat" onClick={() => navigate('/places')}><div className="n">{d.locations}</div><div className="l">Places</div></button>
-          <button className={`stat ${view === 'archived' ? 'active' : ''}`} onClick={() => set('view', view === 'archived' ? '' : 'archived')}><div className="n">{d.archived}</div><div className="l">Archived</div></button>
+          <button type="button" className={`stat ${!view ? 'active' : ''}`} onClick={() => set('view', '')}><Icon name="package" size={16} /><div className="n">{d.items}</div><div className="l">Items</div></button>
+          <button type="button" className={`stat danger ${d.low_stock ? 'has' : ''} ${view === 'low' ? 'active' : ''}`} onClick={() => set('view', view === 'low' ? '' : 'low')}><Icon name="alert" size={16} /><div className="n">{d.low_stock}</div><div className="l">Running low</div></button>
+          <button type="button" className={`stat warn ${d.expiring + d.expired ? 'has' : ''} ${view === 'expiring' ? 'active' : ''}`} onClick={() => set('view', view === 'expiring' ? '' : 'expiring')}><Icon name="hourglass" size={16} /><div className="n">{d.expiring + d.expired}</div><div className="l">Expiring soon</div></button>
+          <button type="button" className="stat" onClick={() => navigate('/places')}><Icon name="pin" size={16} /><div className="n">{d.locations}</div><div className="l">Places</div></button>
+          <button type="button" className={`stat ${view === 'archived' ? 'active' : ''}`} onClick={() => set('view', view === 'archived' ? '' : 'archived')}><Icon name="archive" size={16} /><div className="n">{d.archived}</div><div className="l">Archived</div></button>
         </div>
       )}
 
       <div className="toolbar">
-        <label className="search"><span className="ico">⌕</span><input value={q} onChange={e => set('q', e.target.value)} placeholder="Search name, brand, serial, barcode, tag, place…" /></label>
+        <label className="search"><Icon name="search" size={15} /><input value={q} onChange={e => set('q', e.target.value)} placeholder="Search name, brand, serial, barcode, tag, place…" /></label>
         <Select value={location} onChange={v => set('location', v)} options={placeOpts} ariaLabel="Place" placeholder="All places" />
         <Select value={category} onChange={v => set('category', v)} options={catOpts} ariaLabel="Category" placeholder="All categories" />
         <Select value={sort} onChange={v => set('sort', v)} ariaLabel="Sort" options={[{ value: 'name', label: 'Sort: name' }, { value: 'updated', label: 'Sort: recently changed' }, { value: 'created', label: 'Sort: newest' }, { value: 'quantity', label: 'Sort: lowest quantity' }, { value: 'location', label: 'Sort: by place' }, { value: 'expiry', label: 'Sort: expiry' }]} />
-        {activeFilters && <button className="btn ghost sm" onClick={() => setParams(new URLSearchParams(), { replace: true })}>Clear</button>}
+        {activeFilters && <button type="button" className="btn ghost" onClick={() => setParams(new URLSearchParams(), { replace: true })}><Icon name="x" size={15} />Clear</button>}
       </div>
 
       {(users.length > 1 || (tags.data && tags.data.length > 0)) && (
         <div className="filters">
           {users.length > 1 && <>
-            <span className="lbl">Whose:</span>
-            <button className={`chip ${!person ? 'active' : ''}`} onClick={() => set('user', '')}>All</button>
-            <button className={`chip ${person === 'me' ? 'active' : ''}`} onClick={() => set('user', person === 'me' ? '' : 'me')}>Mine</button>
-            {users.filter(u => u.id !== user?.id).map(u => <button key={u.id} className={`chip ${person === String(u.id) ? 'active' : ''}`} onClick={() => set('user', person === String(u.id) ? '' : String(u.id))}>{u.name || u.email}</button>)}
-            <button className={`chip ${person === 'none' ? 'active' : ''}`} onClick={() => set('user', person === 'none' ? '' : 'none')} title="Items you have not shared with anyone">Not shared</button>
-            {tags.data && tags.data.length > 0 && <span className="lbl" style={{ marginLeft: 8 }}>Tags:</span>}
+            <span className="lbl"><Icon name="users" size={14} />Whose</span>
+            <button type="button" className={`chip ${!person ? 'active' : ''}`} onClick={() => set('user', '')}>All</button>
+            <button type="button" className={`chip ${person === 'me' ? 'active' : ''}`} onClick={() => set('user', person === 'me' ? '' : 'me')}>Mine</button>
+            {users.filter(u => u.id !== user?.id).map(u => <button type="button" key={u.id} className={`chip ${person === String(u.id) ? 'active' : ''}`} onClick={() => set('user', person === String(u.id) ? '' : String(u.id))}>{u.name || u.email}</button>)}
+            <button type="button" className={`chip ${person === 'none' ? 'active' : ''}`} onClick={() => set('user', person === 'none' ? '' : 'none')} title="Items you have not shared with anyone">Not shared</button>
+            {tags.data && tags.data.length > 0 && <span className="lbl filters-gap"><Icon name="tag" size={14} />Tags</span>}
           </>}
-          {tags.data?.map(t => <button key={t} className={`chip ${tag.toLowerCase() === t.toLowerCase() ? 'active' : ''}`} onClick={() => set('tag', tag.toLowerCase() === t.toLowerCase() ? '' : t)}>#{t}</button>)}
+          {tags.data?.map(t => <button type="button" key={t} className={`chip ${tag.toLowerCase() === t.toLowerCase() ? 'active' : ''}`} onClick={() => set('tag', tag.toLowerCase() === t.toLowerCase() ? '' : t)}>#{t}</button>)}
         </div>
       )}
 
       {view !== 'archived' && (
-        <form className="card mb" onSubmit={quickAdd}>
+        <form className="card mb quick-card" onSubmit={quickAdd}>
           <div className="card-body quick-add">
+            <span className="quick-ico" aria-hidden="true"><Icon name="zap" size={16} /></span>
             <input ref={quickRef} className="wide" value={quick.name} onChange={e => setQuick({ ...quick, name: e.target.value })} placeholder="Quick add: what did you get?" maxLength={120} />
             <input type="number" inputMode="decimal" step="any" min={0} value={quick.quantity} onChange={e => setQuick({ ...quick, quantity: e.target.value })} aria-label="Quantity" />
             <Select value={quick.location_id} onChange={v => setQuick({ ...quick, location_id: v })} ariaLabel="Place" placeholder={location && location !== 'none' ? (locations.find(l => String(l.id) === location)?.name || 'Place…') : 'Place…'} options={locations.map(l => ({ value: String(l.id), label: l.name }))} onCreate={createPlace} createLabel="New place" clearLabel="No place" />
             <Select value={quick.category_id} onChange={v => setQuick({ ...quick, category_id: v })} ariaLabel="Category" placeholder={category && category !== 'none' ? (categories.find(c => String(c.id) === category)?.name || 'Category…') : 'Category…'} options={categories.map(c => ({ value: String(c.id), label: c.name }))} onCreate={createCategory} createLabel="New category" clearLabel="No category" />
-            <button className="btn primary" disabled={!quick.name.trim()}>Add</button>
+            <button className="btn primary" disabled={!quick.name.trim()}><Icon name="plus" size={15} />Add</button>
           </div>
         </form>
       )}
 
-      {items.loading && !items.data ? <Loading /> : items.error ? <div className="callout danger">{items.error}</div> : items.data && items.data.length === 0 ? (
-        <div className="card"><Empty title={activeFilters ? 'Nothing matches' : 'Nothing here yet'}>{activeFilters ? 'Try clearing a filter.' : 'Type something in the quick-add box above, or press “New item” for the full form.'}</Empty></div>
+      {items.loading && !items.data ? <Loading /> : items.error ? <div className="callout danger"><Icon name="alert" size={15} /><span>{items.error}</span></div> : items.data && items.data.length === 0 ? (
+        <div className="card"><Empty icon={activeFilters ? 'search' : 'package'} title={activeFilters ? 'Nothing matches' : 'Nothing here yet'}>{activeFilters ? 'Try clearing a filter.' : 'Type something in the quick-add box above, or press “New item” for the full form.'}</Empty></div>
       ) : (
         <div className="items">
           {items.data?.map(it => <ItemRow key={it.id} it={it} currency={currency} onOpen={() => navigate(`/items/${it.id}${params.toString() ? `?${params}` : ''}`)} onAdjust={d => adjust(it, d)} />)}
@@ -155,18 +162,18 @@ function ItemRow({ it, currency, onOpen, onAdjust }: { it: Item; currency: strin
   const step = it.unit && ['kg', 'l', 'g', 'ml', 'm'].includes(it.unit.toLowerCase()) ? 0.5 : 1
   return (
     <div className={`item-row ${it.low ? 'low' : days !== null && days <= 0 ? 'expired' : ''} ${it.archived ? 'muted' : ''}`} onClick={onOpen} role="button">
-      <div className="thumb">{it.photo ? <img src={`${V1}/items/${it.id}/photo?v=${encodeURIComponent(it.photo)}`} alt="" loading="lazy" /> : <span>▣</span>}</div>
-      <div style={{ minWidth: 0 }}>
+      <div className="thumb">{it.photo ? <img src={`${V1}/items/${it.id}/photo?v=${encodeURIComponent(it.photo)}`} alt="" loading="lazy" /> : <Icon name="package" size={20} />}</div>
+      <div className="item-main">
         <div className="nm">
-          <span>{it.name}</span>
+          <span className="item-name">{it.name}</span>
           {it.users.length > 0 && <Avatars users={it.users} />}
-          {it.low && <span className="badge low">low</span>}
+          {it.low && <span className="badge danger">low</span>}
           {days !== null && days <= 0 && <span className="badge warn">expired</span>}
           {days !== null && days > 0 && days <= 30 && <span className="badge warn">{days} d left</span>}
           {it.archived && <span className="badge">archived</span>}
         </div>
         <div className="meta">
-          {it.location_name && <span>⌂ {it.location_name}</span>}
+          {it.location_name && <span className="meta-place"><Icon name="pin" size={13} />{it.location_name}</span>}
           {it.category_name && <><span className="sep" /><span className="badge cat">{it.category_name}</span></>}
           {it.brand && <><span className="sep hide-sm" /><span className="hide-sm">{it.brand}{it.model ? ` ${it.model}` : ''}</span></>}
           {it.price > 0 && <><span className="sep hide-sm" /><span className="hide-sm">{money(it.price, currency)}</span></>}
@@ -174,9 +181,9 @@ function ItemRow({ it, currency, onOpen, onAdjust }: { it: Item; currency: strin
         </div>
       </div>
       <div className={`qty ${it.low ? 'low' : ''}`} onClick={e => e.stopPropagation()}>
-        <button onClick={() => onAdjust(-step)} disabled={it.quantity <= 0 || it.archived} aria-label="Take one">−</button>
+        <button type="button" onClick={() => onAdjust(-step)} disabled={it.quantity <= 0 || it.archived} aria-label="Take one" title="Take one"><Icon name="minus" size={15} strokeWidth={2} /></button>
         <span className="val">{qty(it.quantity)}{it.unit && <span className="unit">{it.unit}</span>}</span>
-        <button onClick={() => onAdjust(step)} disabled={it.archived} aria-label="Add one">+</button>
+        <button type="button" onClick={() => onAdjust(step)} disabled={it.archived} aria-label="Add one" title="Add one"><Icon name="plus" size={15} strokeWidth={2} /></button>
       </div>
     </div>
   )
@@ -260,7 +267,7 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
         <Field label="Notes"><textarea value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} rows={2} placeholder="Where exactly, what it is for, anything worth remembering." /></Field>
 
         <details className="more" open={moreOpen} onToggle={e => setMoreOpen((e.target as HTMLDetailsElement).open)}>
-          <summary>Details: brand, serial, price, dates, barcode</summary>
+          <summary><Icon name="chevron-right" size={15} className="more-caret" />Details: brand, serial, price, dates, barcode</summary>
           <div className="grid mt" style={{ gap: 12 }}>
             <div className="three-col tight">
               <Field label="Brand"><input value={f.brand} onChange={e => setF({ ...f, brand: e.target.value })} /></Field>
@@ -282,10 +289,10 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
         {item.id && (
           <Field label="Photo">
             <div className="photo-box">
-              <div className="thumb">{photo ? <img src={`${V1}/items/${item.id}/photo?v=${encodeURIComponent(photo)}`} alt="" /> : <span>▣</span>}</div>
+              <div className="thumb">{photo ? <img src={`${V1}/items/${item.id}/photo?v=${encodeURIComponent(photo)}`} alt="" /> : <Icon name="image" size={28} />}</div>
               <div className="grid" style={{ gap: 8 }}>
-                <label className="btn">{photo ? 'Replace photo…' : 'Add photo…'}<input type="file" accept="image/*" capture="environment" hidden onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label>
-                {photo && <button type="button" className="btn ghost danger-text sm" onClick={removePhoto}>Remove</button>}
+                <label className="btn"><Icon name="camera" size={15} />{photo ? 'Replace photo…' : 'Add photo…'}<input type="file" accept="image/*" capture="environment" hidden onChange={e => e.target.files?.[0] && upload(e.target.files[0])} /></label>
+                {photo && <button type="button" className="btn ghost danger-text sm" onClick={removePhoto}><Icon name="trash" size={14} />Remove</button>}
               </div>
             </div>
           </Field>
@@ -298,8 +305,8 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
 
         <div className="form-actions">
           {item.id && <>
-            {isOwner && <button type="button" className="btn ghost danger-text" onClick={() => setConfirm('delete')}>Delete</button>}
-            <button type="button" className="btn ghost" onClick={() => archive(!item.archived)}>{item.archived ? 'Restore' : 'Archive'}</button>
+            {isOwner && <button type="button" className="btn ghost danger-text" onClick={() => setConfirm('delete')}><Icon name="trash" size={15} />Delete</button>}
+            <button type="button" className="btn ghost" onClick={() => archive(!item.archived)}><Icon name={item.archived ? 'undo' : 'archive'} size={15} />{item.archived ? 'Restore' : 'Archive'}</button>
           </>}
           <span className="spacer" />
           <button type="button" className="btn" onClick={onClose}>Cancel</button>
@@ -309,13 +316,13 @@ export function ItemModal({ item, onClose, onSaved }: { item: Partial<Item>; onC
 
       {item.id && moves && moves.length > 0 && (
         <div className="mt">
-          <h3 className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>History</h3>
+          <h3 className="section-label"><Icon name="activity" size={14} />History</h3>
           <ul className="history">
-            {moves.map(m => <li key={m.id}><span className={`d ${m.delta > 0 ? 'plus' : 'minus'}`}>{m.delta > 0 ? '+' : ''}{qty(m.delta)}</span><span>→ {qty(m.quantity_after)}{item.unit ? ` ${item.unit}` : ''}{m.note ? ` · ${m.note}` : ''}{m.user_name ? ` · ${m.user_name}` : ''}</span><span className="when">{ago(m.created_at)}</span></li>)}
+            {moves.map(m => <li key={m.id}><span className={`d ${m.delta > 0 ? 'plus' : 'minus'}`}>{m.delta > 0 ? '+' : ''}{qty(m.delta)}</span><span className="grow">→ {qty(m.quantity_after)}{item.unit ? ` ${item.unit}` : ''}{m.note ? ` · ${m.note}` : ''}{m.user_name ? ` · ${m.user_name}` : ''}</span><span className="when">{ago(m.created_at)}</span></li>)}
           </ul>
         </div>
       )}
-      {confirm === 'delete' && <Confirm title={`Delete “${item.name}”?`} message="This removes the item, its photo and its history. Archive instead if you may want it back." onCancel={() => setConfirm(null)} onConfirm={del} />}
+      {confirm === 'delete' && <Confirm confirmLabel="Delete" title={`Delete “${item.name}”?`} message="This removes the item, its photo and its history. Archive instead if you may want it back." onCancel={() => setConfirm(null)} onConfirm={del} />}
     </Modal>
   )
 }

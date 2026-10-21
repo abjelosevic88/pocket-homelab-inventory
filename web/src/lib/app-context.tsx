@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { api, V1 } from './api'
 import type { Category, Location, Settings, User } from './types'
 
+export type ThemeMode = 'system' | 'light' | 'dark'
+
 interface AuthStatus { needs_setup: boolean; auth_mode: string; authenticated: boolean; user: User | null; version: string; title: string; oidc?: boolean; oidc_name?: string }
 
 interface AppState {
@@ -11,7 +13,9 @@ interface AppState {
   users: User[]
   locations: Location[]
   categories: Category[]
+  themeMode: ThemeMode
   theme: 'light' | 'dark'
+  setThemeMode: (m: ThemeMode) => void
   toggleTheme: () => void
   refresh: () => Promise<void>
   reloadMeta: () => Promise<void>
@@ -29,9 +33,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [users, setUsers] = useState<User[]>([])
   const [locations, setLocations] = useState<Location[]>([])
   const [categories, setCategories] = useState<Category[]>([])
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('pi-theme') as 'light' | 'dark') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))
-
-  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('pi-theme', theme) }, [theme])
+  // The theme follows the system unless you pick light or dark in the avatar menu.
+  // (The old toggle saved 'pi-theme' on every load, so that key is retired.)
+  const [themeMode, setThemeModeRaw] = useState<ThemeMode>(() => { localStorage.removeItem('pi-theme'); return (localStorage.getItem('pi-theme-mode') as ThemeMode) || 'system' })
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const h = () => setSystemDark(mq.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
+  const theme: 'light' | 'dark' = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.setAttribute('content', theme === 'dark' ? '#111113' : '#ffffff'))
+  }, [theme])
+  const setThemeMode = useCallback((m: ThemeMode) => { setThemeModeRaw(m); if (m === 'system') localStorage.removeItem('pi-theme-mode'); else localStorage.setItem('pi-theme-mode', m) }, [])
   useEffect(() => { if (settings?.title) document.title = settings.title }, [settings?.title])
 
   const reloadMeta = useCallback(async () => {
@@ -56,5 +73,5 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('pi:unauthorized', h)
   }, [])
 
-  return <Ctx.Provider value={{ status, user, settings, users, locations, categories, theme, toggleTheme: () => setTheme(t => t === 'dark' ? 'light' : 'dark'), refresh, reloadMeta, setUser, setSettings }}>{children}</Ctx.Provider>
+  return <Ctx.Provider value={{ status, user, settings, users, locations, categories, themeMode, theme, setThemeMode, toggleTheme: () => setThemeMode(theme === 'dark' ? 'light' : 'dark'), refresh, reloadMeta, setUser, setSettings }}>{children}</Ctx.Provider>
 }
