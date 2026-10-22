@@ -12,6 +12,7 @@ import { ShortcutsSheet } from './ShortcutsSheet'
 import { ItemModal } from '../pages/Items'
 import { announceChange, openShortcuts, useOnChange } from './events'
 import { Avatar, Field, Modal, type MenuItem, MenuButton, modalOpen, useIsMobile, useMediaQuery, useToast } from './ui'
+import { AskButton } from './AskButton'
 
 const SIDEBAR_KEY = 'pi-sidebar'
 
@@ -200,6 +201,7 @@ function TopBar({ onMenu, onPalette, mobile, compact, sidebarOpen }: { onMenu: (
       </h1>
       <span className="spacer" />
       <button type="button" className="btn ghost icon-only" onClick={onPalette} aria-label="Search" title="Search (⌘K or /)"><Icon name="search" size={18} /></button>
+      {mobile && <AskButton />}
       <MenuButton label="Account" className="avatar-btn" align="right" width={220} items={avatarMenu}>
         <Avatar name={user?.name} email={user?.email} size={30} color={user ? colorFor(user.id) : undefined} />
       </MenuButton>
