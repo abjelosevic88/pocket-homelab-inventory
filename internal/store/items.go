@@ -307,7 +307,7 @@ func (s *Store) CreateItemOperation(ctx context.Context, it *Item, actor int64, 
 // quantity is logged as a movement. Place, category and who it is shared with
 // belong to the item's owner: when someone it is shared with saves it, those
 // three stay as they were.
-func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int64) error {
+func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int64, after ...core.CommitHook) error {
 	it.Tags = NormalizeTags(it.Tags)
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -353,7 +353,18 @@ func (s *Store) UpdateItem(ctx context.Context, it *Item, note string, actor int
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if len(after) > 0 {
+		// hooks (events) see the item as saved, with its place and category names
+		fresh, err := scanItem(tx.QueryRowContext(ctx, `SELECT `+itemCols+itemFrom+` WHERE i.id=?`, it.ID))
+		if err != nil {
+			return err
+		}
+		if err := attachItemUsers(ctx, tx, []*Item{fresh}); err != nil {
+			return err
+		}
+		*it = *fresh
+	}
+	if err := core.Commit(tx, after...); err != nil {
 		return err
 	}
 	fresh, err := s.GetItem(ctx, actor, it.ID)

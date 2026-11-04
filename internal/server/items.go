@@ -293,7 +293,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "resolve places")
 		return
 	}
-	if err := s.store.UpdateItem(r.Context(), it, note, actorID(r.Context())); err != nil {
+	if err := s.store.UpdateItem(r.Context(), it, note, actorID(r.Context()), s.itemEvent(r.Context(), userFrom(r.Context()), "inventory.item_updated", it, nil)); err != nil {
 		s.fail(w, err, "update item")
 		return
 	}

@@ -305,7 +305,7 @@ func (s *Server) registerWithCore(ctx context.Context) error {
 		Description: "A self-hosted home inventory for households: what you own, how many, where it is and whose it is.",
 		Icon:        "/favicon.svg", Version: Version,
 		URL: s.cfg.CoreAppURL, PublicURL: s.cfg.BaseURL, HealthPath: "/healthz", EnvPrefix: "INVENTORY",
-		Publishes: []string{"inventory.item_created", "inventory.adjusted", "inventory.item_archived"},
+		Publishes: []string{"inventory.item_created", "inventory.item_updated", "inventory.adjusted", "inventory.item_archived"},
 		Offers:    linkOffers,
 	}
 	if s.cfg.BaseURL != "" {

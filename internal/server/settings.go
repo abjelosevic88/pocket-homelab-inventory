@@ -402,7 +402,7 @@ func (s *Server) importRows(r *http.Request, rows []importRow) (created, updated
 		}
 		if cur, ok := byKey[key(it.Name, row.location)]; ok {
 			it.ID, it.Photo, it.CreatedAt, it.OwnerID = cur.ID, cur.Photo, cur.CreatedAt, cur.OwnerID
-			if err := s.store.UpdateItem(ctx, &it, "import", actor); err != nil {
+			if err := s.store.UpdateItem(ctx, &it, "import", actor, s.itemEvent(ctx, userFrom(ctx), "inventory.item_updated", &it, nil)); err != nil {
 				return created, updated, err
 			}
 			updated++

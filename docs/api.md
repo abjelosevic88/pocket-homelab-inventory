@@ -100,6 +100,17 @@ Another Pocket app the person allowed in Pocket Core calls this API for them wit
 
 A linked app never changes who an item is shared with (`user_ids` is ignored), cannot delete, unarchive or touch photos, and a quantity change it makes without a `note` is recorded with the app's name.
 
+## Pocket Core events
+
+With Pocket Core configured, every change below is queued in the same transaction as the write (subject `item:<id>`) and delivered to Core. Each payload carries `item_id`, `item` (the name), `quantity`, `unit` and, for the person who made the change, `user` / `user_email`.
+
+| Topic | When | Extra fields |
+|---|---|---|
+| `inventory.item_created` | `POST /items` | `name`, `category_id`, `category`, `location_id`, `location`, `tags`, `expiry_date` (`YYYY-MM-DD` or `""`) |
+| `inventory.item_updated` | `PUT /items/{id}`, and each existing item an import updates | same as `item_created`, as saved |
+| `inventory.adjusted` | `POST /items/{id}/adjust` | `delta`, `set_to`, `note`, `low` |
+| `inventory.item_archived` | `POST /items/{id}/archive` | – |
+
 ## Homepage widget
 
 ```yaml
