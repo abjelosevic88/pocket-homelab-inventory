@@ -219,7 +219,8 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 
 // handleImportJSON merges an export file into the caller's own data: places are
 // matched by name in their lists (created when missing), items are matched by
-// name + location among the items they own and updated or created.
+// name + location among the items they own. It only adds: an item already
+// there is left as it is (skipped), so the same file twice adds nothing.
 func (s *Server) handleImportJSON(w http.ResponseWriter, r *http.Request) {
 	var ex Export
 	if err := decode(r, &ex); err != nil {
@@ -243,12 +244,12 @@ func (s *Server) handleImportJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, importRow{item: it, location: it.LocationName, category: it.CategoryName, owners: owners})
 	}
-	created, updated, err := s.importRows(r, rows)
+	created, skipped, err := s.importRows(r, rows, true)
 	if err != nil {
 		s.fail(w, err, "import")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"created": created, "updated": updated})
+	writeJSON(w, http.StatusOK, map[string]int{"created": created, "updated": 0, "skipped": skipped})
 }
 
 type importRow struct {
@@ -342,7 +343,7 @@ func (s *Server) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, importRow{item: it, location: get(rec, "location"), category: get(rec, "category"), owners: owners})
 	}
-	created, updated, err := s.importRows(r, rows)
+	created, updated, err := s.importRows(r, rows, false)
 	if err != nil {
 		s.fail(w, err, "import")
 		return
@@ -350,7 +351,9 @@ func (s *Server) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"created": created, "updated": updated})
 }
 
-func (s *Server) importRows(r *http.Request, rows []importRow) (created, updated int, err error) {
+// importRows creates the rows' items; one already there (same name and place)
+// is updated, or with addOnly left alone and counted in the second value.
+func (s *Server) importRows(r *http.Request, rows []importRow, addOnly bool) (created, updated int, err error) {
 	ctx := r.Context()
 	actor := actorID(ctx)
 	existing, err := s.store.ListItems(ctx, actor, store.ItemFilter{Archived: true, OwnedOnly: true})
@@ -399,6 +402,10 @@ func (s *Server) importRows(r *http.Request, rows []importRow) (created, updated
 			if id, ok := userByName[strings.ToLower(o)]; ok {
 				it.UserIDs = append(it.UserIDs, id)
 			}
+		}
+		if _, ok := byKey[key(it.Name, row.location)]; ok && addOnly {
+			updated++
+			continue
 		}
 		if cur, ok := byKey[key(it.Name, row.location)]; ok {
 			it.ID, it.Photo, it.CreatedAt, it.OwnerID = cur.ID, cur.Photo, cur.CreatedAt, cur.OwnerID

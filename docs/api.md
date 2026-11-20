@@ -81,7 +81,7 @@ Every key except `name` is optional. The response adds `id`, `location_name`, `c
 | `GET` · `POST` · `DELETE` | `/tokens` | Personal tokens. The plaintext is returned once on create. |
 | `GET` | `/backup` | Consistent SQLite copy of the whole box. Admin only. |
 | `GET` | `/export.json` · `/export.csv` | Your own data: the items you own, your places and categories, their history / one row per item. |
-| `POST` | `/import` | The JSON export, into your own inventory. Places matched by name, items by name + place among your items (update or create). |
+| `POST` | `/import` | The JSON export, into your own inventory. Places matched by name, items by name + place among your items; it only adds (an item you already have is skipped), so the same file twice adds nothing: `{created, skipped}`. |
 | `POST` | `/import.csv` | CSV body or `multipart/form-data` field `file`. Needs a `name` column; others optional (see export). `owners` is `;`-separated user names. |
 
 Unauthenticated: `/healthz`, `/readyz`, `/metrics` (Prometheus row counts and HTTP stats only; disable with `METRICS_ENABLED=false` or block at the proxy).

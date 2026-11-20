@@ -263,7 +263,7 @@ function Data() {
   const [busy, setBusy] = useState(false)
   const importJSON = async (file: File) => {
     setBusy(true)
-    try { const r = await api.post<{ created: number; updated: number }>(`${V1}/import`, JSON.parse(await file.text())); toast(`Imported: ${r.created} new, ${r.updated} updated`); reloadMeta() } catch (e) { toast((e as Error).message, 'err') } finally { setBusy(false) }
+    try { const r = await api.post<{ created: number; skipped: number }>(`${V1}/import`, JSON.parse(await file.text())); toast(`Imported: ${r.created} new, ${r.skipped} already here`); reloadMeta() } catch (e) { toast((e as Error).message, 'err') } finally { setBusy(false) }
   }
   const importCSV = async (file: File) => {
     setBusy(true)
@@ -290,7 +290,7 @@ function Data() {
           <label className="btn ghost"><Icon name="upload" size={15} />{busy ? 'Importing…' : 'Import JSON…'}<input type="file" accept="application/json" hidden onChange={e => e.target.files?.[0] && importJSON(e.target.files[0])} /></label>
           <label className="btn ghost"><Icon name="upload" size={15} />{busy ? 'Importing…' : 'Import CSV…'}<input type="file" accept=".csv,text/csv" hidden onChange={e => e.target.files?.[0] && importCSV(e.target.files[0])} /></label>
         </div>
-        <p className="muted small mt">Import merges: places and categories are matched by name, items by name + place (updated if found, created if not). CSV needs a <code>name</code> column; <code>quantity, unit, min_quantity, location, category, owners, tags, brand, model, serial, barcode, price, purchase_date, expiry_date, url, notes</code> are optional.</p>
+        <p className="muted small mt">Import merges: places and categories are matched by name, items by name + place (a JSON export only adds the ones you do not have; a CSV updates the ones it finds and creates the rest). CSV needs a <code>name</code> column; <code>quantity, unit, min_quantity, location, category, owners, tags, brand, model, serial, barcode, price, purchase_date, expiry_date, url, notes</code> are optional.</p>
       </Section>
     </div>
   )
