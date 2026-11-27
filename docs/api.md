@@ -100,13 +100,24 @@ Another Pocket app the person allowed in Pocket Core calls this API for them wit
 
 A linked app never changes who an item is shared with (`user_ids` is ignored), cannot delete, unarchive or touch photos, and a quantity change it makes without a `note` is recorded with the app's name.
 
+## Found by Pocket Search, Day and Hub
+
+With Pocket Core 0.49 or newer the app says in its manifest what it can do (category `Home`), and Pocket Search, Pocket Day and Pocket Hub find it without knowing anything about Inventory (`docs/capabilities.md` in pocket-homelab-core). Each route below answers in the shape every Pocket app uses, as the person the caller acts for: their own items and the ones shared with them, like the rest of this API. A signed-in person or a personal token may call them too. A linked app needs the route's own scope; the scopes above do not open these routes, and these scopes open nothing else.
+
+| Scope | Route | Answer |
+|---|---|---|
+| `pocket:search` | `GET /pocket/search?q=&limit=` | Items found by the search behind `GET /items?q=` (name, brand, model, serial, barcode, notes, tags, place, category; archived ones left out). The item called exactly that comes first, then names that have the words, then the rest. `snippet` is how many there are, the place, and the expiry date when it is near or past: `0.5 l · Pantry · expires in 3 days`. A query without a letter or digit finds nothing. Bangs in Pocket Search: `!inv`, `!inventory`. |
+| `pocket:day` | `GET /pocket/day/{YYYY-MM-DD}?tz=` | What happened that day, from the activity log: one line per item with its changes added up. `kind` is `added` (`Olive oil: new, 1 l`, `Milk: 6 l more`), `used` (`Flour: 500 g used`, `Eggs: 10 used, none left`), `adjusted` (changed, and the same at the end: `Rice: 2 kg, same as before`) or `expired` (the item's date ran out that day). `sub` is the place, `time` the last change, `note` the notes of the changes. The day runs in `tz` (an IANA name), else in the server's time zone. |
+| `pocket:widget` | `GET /pocket/widget` | What needs attention: `line` like `3 running low, 1 expired, 2 expiring soon` (empty when all is fine), the same three numbers as `metrics`, and up to 8 `items`, the ones running low first (`2 pcs left`, `none left`), then by expiry date (`expired yesterday`, `expires in 3 days`). "Soon" is the person's own *expiry warning* setting. Opens the Shopping page. |
+| `pocket:capture` | `POST /pocket/capture` | `{"request_id": "…", "kind": "item", "title": "", "text": "Olive oil"}` adds one item the way the app's own form does from a name alone: one of it, in the person's default unit, without a place or category, theirs alone. The title (or the first line of the text) is the name, the rest becomes the notes. Answers `201 {"id", "title", "url"}`. A name the person already has (capitals aside, archived items not counted) answers `400 {"error": "“Olive oil” is already in your inventory"}`: a quick line never changes how many there are. The same `request_id` again answers the item made the first time and adds nothing; the same id with other words answers `400`. |
+
 ## Pocket Core events
 
 With Pocket Core configured, every change below is queued in the same transaction as the write (subject `item:<id>`) and delivered to Core. Each payload carries `item_id`, `item` (the name), `quantity`, `unit` and, for the person who made the change, `user` / `user_email`.
 
 | Topic | When | Extra fields |
 |---|---|---|
-| `inventory.item_created` | `POST /items` | `name`, `category_id`, `category`, `location_id`, `location`, `tags`, `expiry_date` (`YYYY-MM-DD` or `""`) |
+| `inventory.item_created` | `POST /items`, `POST /pocket/capture` | `name`, `category_id`, `category`, `location_id`, `location`, `tags`, `expiry_date` (`YYYY-MM-DD` or `""`) |
 | `inventory.item_updated` | `PUT /items/{id}`, and each existing item an import updates | same as `item_created`, as saved |
 | `inventory.adjusted` | `POST /items/{id}/adjust` | `delta`, `set_to`, `note`, `low` |
 | `inventory.item_archived` | `POST /items/{id}/archive` | – |

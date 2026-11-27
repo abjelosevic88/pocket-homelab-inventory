@@ -188,6 +188,11 @@ func (s *Server) Router() http.Handler {
 			r.Post("/import", s.handleImportJSON)
 			r.Post("/import.csv", s.handleImportCSV)
 			r.Get(strings.TrimPrefix(core.PortablePath, "/api/v1"), portable.Handler())
+
+			r.Get("/pocket/search", core.SearchHandler(s.pocketSearch))
+			r.Get("/pocket/day/{date}", core.DayHandler(s.pocketDay))
+			r.Get("/pocket/widget", core.WidgetHandler(s.pocketWidget))
+			r.Post("/pocket/capture", capabilities.Capture.CaptureHandler(s.pocketCapture))
 		})
 	})
 
@@ -305,10 +310,11 @@ func (s *Server) registerWithCore(ctx context.Context) error {
 		Slug: "inventory", Name: "Pocket Inventory",
 		Description: "A self-hosted home inventory for households: what you own, how many, where it is and whose it is.",
 		Icon:        "/favicon.svg", Version: Version,
-		URL: s.cfg.CoreAppURL, PublicURL: s.cfg.BaseURL, HealthPath: "/healthz", EnvPrefix: "INVENTORY",
-		Publishes: []string{"inventory.item_created", "inventory.item_updated", "inventory.adjusted", "inventory.item_archived"},
-		Offers:    linkOffers,
-		Portable:  portable,
+		URL: s.cfg.CoreAppURL, PublicURL: s.cfg.BaseURL, HealthPath: "/healthz", EnvPrefix: "INVENTORY", Category: "Home",
+		Publishes:    []string{"inventory.item_created", "inventory.item_updated", "inventory.adjusted", "inventory.item_archived"},
+		Offers:       linkOffers,
+		Portable:     portable,
+		Capabilities: capabilities,
 	}
 	if s.cfg.BaseURL != "" {
 		// ask for a relying-party client so "Sign in with Pocket Core" needs no configuration

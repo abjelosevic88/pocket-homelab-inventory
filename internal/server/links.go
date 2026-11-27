@@ -37,6 +37,18 @@ var portable = &core.Portable{
 	},
 }
 
+// capabilities is what Inventory lets Pocket Search, Pocket Day and Pocket
+// Hub do with it (docs/capabilities.md in pocket-homelab-core); Register adds
+// the pocket:* offers. The routes are in capabilities.go.
+var capabilities = core.Capabilities{
+	Search: &core.Searchable{What: "Your items, by name, brand, model, barcode and notes", Kinds: []string{"item"}, Bangs: []string{"inv", "inventory"}},
+	Day:    &core.DayFeed{Label: "Inventory", One: "change", Many: "changes", What: "What you added, used or topped up that day, and what expired"},
+	Widget: &core.Widget{Title: "Running low", What: "The items that are running low and the ones that expire soon"},
+	Capture: &core.QuickCapture{Kinds: []core.CaptureKind{
+		{Kind: "item", Label: "Item", What: "A new item by its name, one of it; you set the place and how many later", Fields: []string{"title"}},
+	}},
+}
+
 type linkRoute struct {
 	methods string
 	path    *regexp.Regexp
@@ -59,7 +71,7 @@ var linkRoutes = []linkRoute{
 var errLinkScope = errors.New("outside the link's scope")
 
 func linkAllows(scopes []string, r *http.Request) bool {
-	if portable.LinkAllows(scopes, r) {
+	if portable.LinkAllows(scopes, r) || capabilities.LinkAllows(scopes, r) {
 		return true
 	}
 	for _, lr := range linkRoutes {

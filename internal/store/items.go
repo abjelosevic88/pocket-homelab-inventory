@@ -28,6 +28,11 @@ type ItemFilter struct {
 	Expiring   int  // >0: expiry within N days (or already expired)
 	Sort       string
 	Limit      int
+
+	// For the Pocket capability routes (server/capabilities.go).
+	NameFirst  bool   // with Query: the name itself first, then names that have the words, then the rest
+	ExpiryFrom string // expiry date on or after this day (YYYY-MM-DD)
+	ExpiryTo   string // expiry date on or before this day
 }
 
 const itemCols = `i.id, i.name, i.notes, i.category_id, i.location_id, i.quantity, i.unit, i.min_quantity,
@@ -156,6 +161,14 @@ func (s *Store) ListItems(ctx context.Context, uid int64, f ItemFilter) ([]Item,
 		where = append(where, "i.expiry_date <> '' AND i.expiry_date <= ?")
 		args = append(args, time.Now().AddDate(0, 0, f.Expiring).Format("2006-01-02"))
 	}
+	if f.ExpiryFrom != "" {
+		where = append(where, "i.expiry_date <> '' AND i.expiry_date >= ?")
+		args = append(args, f.ExpiryFrom)
+	}
+	if f.ExpiryTo != "" {
+		where = append(where, "i.expiry_date <> '' AND i.expiry_date <= ?")
+		args = append(args, f.ExpiryTo)
+	}
 	order := "i.name COLLATE NOCASE"
 	switch f.Sort {
 	case "updated":
@@ -168,6 +181,10 @@ func (s *Store) ListItems(ctx context.Context, uid int64, f ItemFilter) ([]Item,
 		order = "l.sort_order, l.name COLLATE NOCASE, i.name COLLATE NOCASE"
 	case "expiry":
 		order = "CASE WHEN i.expiry_date = '' THEN 1 ELSE 0 END, i.expiry_date, i.name COLLATE NOCASE"
+	}
+	if q := strings.TrimSpace(f.Query); f.NameFirst && q != "" {
+		order = "CASE WHEN i.name LIKE ? THEN 0 WHEN i.name LIKE ? THEN 1 ELSE 2 END, " + order
+		args = append(args, q, "%"+q+"%")
 	}
 	q := `SELECT ` + itemCols + itemFrom + " WHERE " + strings.Join(where, " AND ")
 	q += " ORDER BY " + order

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -357,5 +358,92 @@ func TestAdoptOrphans(t *testing.T) {
 	}
 	if items, _ := s.ListItems(ctx, u.ID, ItemFilter{}); len(items) != 1 {
 		t.Fatal("first account should adopt ownerless rows")
+	}
+}
+
+// One day of the activity log is found by time, not by going through the log
+// or through every item.
+func TestDayChangesReadsOnlyThatDay(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	me := mkUser(t, s, "me@x", "Me", "admin").ID
+	other := mkUser(t, s, "other@x", "Other", "member").ID
+	rows, err := s.DB.QueryContext(ctx, `EXPLAIN QUERY PLAN `+dayMovements, "2026-03-10T00:00:00", "2026-03-11T00:00:00", me, me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := ""
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	rows.Close()
+	if !strings.Contains(plan, "SEARCH m USING INDEX movements_created (created_at>? AND created_at<?)") || strings.Contains(plan, "SCAN") || strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("plan:\n%s", plan)
+	}
+
+	mine := &Item{Name: "Flour", Quantity: 2000, Unit: "g"}
+	theirs := &Item{Name: "Secret", Quantity: 5}
+	empty := &Item{Name: "Jar"}
+	for it, owner := range map[*Item]int64{mine: me, theirs: other, empty: me} {
+		if err := s.CreateItem(ctx, it, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []float64{-300, -200} {
+		if _, err := s.AdjustQuantity(ctx, mine.ID, d, "Bread", me); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.AdjustQuantity(ctx, theirs.ID, -1, "", other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`UPDATE items SET created_at = '2026-03-01T08:00:00.000Z' WHERE id = ?;
+		UPDATE movements SET created_at = '2026-03-01T08:00:00.000Z' WHERE note = 'added';
+		UPDATE movements SET created_at = '2026-03-10T09:00:00.000Z' WHERE delta = -300;
+		UPDATE movements SET created_at = '2026-03-10T23:59:59.999Z' WHERE delta IN (-200, -1)`, mine.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DayChanges(ctx, me, "2026-03-10T00:00:00", "2026-03-11T00:00:00")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("day: %+v %v", got, err)
+	}
+	if c := got[0]; c.ItemID != mine.ID || c.New || c.Net != -500 || c.After != 1500 || c.At != "2026-03-10T23:59:59.999Z" || len(c.Notes) != 1 || c.Notes[0] != "Bread" {
+		t.Fatalf("flour: %+v", c)
+	}
+	// the day things were added: each as new, the one with none on hand too
+	today, err := s.DayChanges(ctx, me, "2026-03-11T00:00:00", "9999")
+	if err != nil || len(today) != 1 || today[0].ItemID != empty.ID || !today[0].New || today[0].Net != 0 || today[0].At == "" {
+		t.Fatalf("added with none on hand: %+v %v", today, err)
+	}
+	if first, _ := s.DayChanges(ctx, me, "2026-03-01T00:00:00", "2026-03-02T00:00:00"); len(first) != 1 || !first[0].New || first[0].Net != 2000 || first[0].After != 2000 {
+		t.Fatalf("the day it was added: %+v", first)
+	}
+
+	// a name that is there, capitals aside, also beyond A to Z; not someone else's, not an archived one
+	for name, want := range map[string]string{"flour": "Flour", " FLOUR ": "Flour", "Flou": "", "secret": "", "jar": "Jar"} {
+		if have, err := ItemNamed(ctx, s.DB, me, name, 0); err != nil || have != want {
+			t.Errorf("ItemNamed(%q) = %q, %v; want %q", name, have, err, want)
+		}
+	}
+	if have, _ := ItemNamed(ctx, s.DB, me, "flour", mine.ID); have != "" {
+		t.Errorf("the item itself counted: %q", have)
+	}
+	sugar := &Item{Name: "Šećer"}
+	if err := s.CreateItem(ctx, sugar, me); err != nil {
+		t.Fatal(err)
+	}
+	if have, _ := ItemNamed(ctx, s.DB, me, "ŠEĆER", 0); have != "Šećer" {
+		t.Errorf("ŠEĆER: %q", have)
+	}
+	if err := s.SetArchived(ctx, me, sugar.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if have, _ := ItemNamed(ctx, s.DB, me, "šećer", 0); have != "" {
+		t.Errorf("an archived item counted: %q", have)
 	}
 }

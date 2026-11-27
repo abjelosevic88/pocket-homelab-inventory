@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,8 @@ type perUserHarness struct {
 	t        *testing.T
 	ts       *httptest.Server
 	st       *store.Store
+	srv      *Server
+	manifest *atomic.Pointer[json.RawMessage]
 	ana, bo  *store.User
 	anaTok   string
 	boTok    string
@@ -34,6 +37,7 @@ type perUserHarness struct {
 
 func newPerUserHarness(t *testing.T) *perUserHarness {
 	t.Helper()
+	manifest := &atomic.Pointer[json.RawMessage]{} // what the app last registered with
 	fakeCore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/auth/introspect":
@@ -45,13 +49,17 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 			}
 			if strings.HasPrefix(in.Token, "pcx_bo_") { // a linked app acting for Bo
 				scope := map[string]string{"pcx_bo_full": "items:read items:adjust", "pcx_bo_read": "items:read",
-					"pcx_bo_kitchen": "items:read items:write items:adjust", "pcx_bo_write": "items:write", "pcx_bo_day": "activity:read"}[in.Token]
+					"pcx_bo_kitchen": "items:read items:write items:adjust", "pcx_bo_write": "items:write", "pcx_bo_day": "activity:read",
+					// the capability scopes, one each (capabilities_test.go)
+					"pcx_bo_psearch": "pocket:search", "pcx_bo_pday": "pocket:day", "pcx_bo_pwidget": "pocket:widget", "pcx_bo_pcapture": "pocket:capture"}[in.Token]
 				slug, name := "garage", "Pocket Garage"
 				switch in.Token {
 				case "pcx_bo_kitchen", "pcx_bo_write":
 					slug, name = "kitchen", "Pocket Kitchen"
 				case "pcx_bo_day":
 					slug, name = "day", "Pocket Day"
+				case "pcx_bo_psearch", "pcx_bo_pday", "pcx_bo_pwidget", "pcx_bo_pcapture":
+					slug, name = "hub", "Pocket Hub"
 				}
 				fmt.Fprintf(w, `{"active":true,"kind":"delegated","scope":%q,"audience":"inventory","user":{"id":7,"sub":"bo@example.com","email":"bo@example.com","name":"Bo","role":"member"},"app":{"id":3,"slug":%q,"name":%q}}`, scope, slug, name)
 				return
@@ -65,6 +73,10 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 				return
 			}
 			fmt.Fprint(w, `{"active":false}`)
+		case "/api/v1/apps/register":
+			manifest.Store(new(json.RawMessage))
+			_ = json.NewDecoder(r.Body).Decode(manifest.Load())
+			fmt.Fprint(w, `{}`)
 		default:
 			fmt.Fprint(w, `{}`)
 		}
@@ -85,7 +97,7 @@ func newPerUserHarness(t *testing.T) *perUserHarness {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	h := &perUserHarness{t: t, st: st, boDevice: "pcd_bo_phone"}
+	h := &perUserHarness{t: t, st: st, srv: s, manifest: manifest, boDevice: "pcd_bo_phone"}
 	h.ana = &store.User{Email: "ana@example.com", Name: "Ana", Role: "admin"}
 	h.bo = &store.User{Email: "bo@example.com", Name: "Bo", Role: "member"}
 	for _, u := range []*store.User{h.ana, h.bo} {
